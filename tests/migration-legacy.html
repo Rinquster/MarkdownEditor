@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>MDEditor — миграция старых схем</title>
+  <style>
+    body { margin: 0; font: 13px/1.4 monospace; background: #07090f; color: #ccd6e0; }
+    iframe { width: 900px; height: 380px; border: 1px solid #282c42; }
+    pre { white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <pre id="results">…</pre>
+  <div id="host"></div>
+
+  <script>
+  (async () => {
+    const out = []; let passed = 0, failed = 0;
+    const flush = () => { document.getElementById('results').textContent = out.join('\n'); };
+    const check = (name, ok, detail) => {
+      ok ? passed++ : failed++;
+      out.push((ok ? 'PASS  ' : 'FAIL  ') + name + (ok || !detail ? '' : '\n        → ' + detail));
+      flush();
+    };
+    const step = (label) => { out.push('.. ' + label); flush(); };
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    window.addEventListener('error', (e) => { out.push('ОШИБКА: ' + e.message); flush(); });
+
+    // ---- работа с базой напрямую ----
+    function deleteDb() {
+      return new Promise((resolve) => {
+        const request = indexedDB.deleteDatabase('mdeditor');
+        request.onsuccess = request.onerror = request.onblocked = () => resolve();
+      });
+    }
+
+    // создаём базу ровно такой, какой её оставляла старая версия: одна запись
+    // в store «workspace» под ключом «state»
+    function seedLegacy(state) {
+      return new Promise((resolve, reject) => {
+        const request = indexedDB.open('mdeditor', 1);
+        request.onupgradeneeded = () => {
+          const db = request.result;
+          if (!db.objectStoreNames.contains('workspace')) db.createObjectStore('workspace');
+        };
+        request.onsuccess = () => {
+          const db = request.result;
+          const tx = db.transaction('workspace', 'readwrite');
+          tx.objectStore('workspace').put(state, 'state');
+          tx.oncomplete = () => { db.close(); resolve(); };
+          tx.onerror = () => { db.close(); reject(tx.error); };
+        };
+        request.onerror = () => reject(request.error);
+      });
+    }
+
+    function readDb() {
+      return new Promise((resolve, reject) => {
+        const request = indexedDB.open('mdeditor');
+        request.onsuccess = async () => {
+          const db = request.result;
+          const get = (store, key) => new Promise((res) => {
+            if (!db.objectStoreNames.contains(store)) { res(undefined); return; }
+            const os = db.transaction(store, 'readonly').objectStore(store);
+            const r = key === undefined ? os.getAll() : os.get(key);
+            r.onsuccess = () => res(r.result);
+            r.onerror = () => res(undefined);
+          });
+          const files = await get('files');
+          const meta = await get('meta', 'meta');
+          const legacy = await get('workspace', 'state');
+          db.close();
+          resolve({ files: files || [], meta: meta || null, legacy: legacy || null });
+        };
+        request.onerror = () => reject(request.error);
+      });
+    }
+
+    async function bootFrame() {
+      // общий профиль браузера между тестами: чужой аварийный снимок
+      // подменил бы содержимое открытого файла
+      try { localStorage.removeItem('mdeditor-emergency'); } catch {}
+      const frame = document.createElement('iframe');
+      frame.src = '_app-frame.html';
+      document.getElementById('host').appendChild(frame);
+      await new Promise((resolve) => { frame.onload = resolve; });
+      const doc = frame.contentDocument;
+      for (let i = 0; i < 80 && doc.getElementById('file-list').children.length === 0; i++) await sleep(50);
+      await sleep(400); // даём отработать записи миграции
+      return frame;
+    }
+
+    function namesIn(frame) {
+      return Array.from(frame.contentDocument.querySelectorAll('#file-list .file-row'))
+        .map((row) => {
+          const name = row.querySelector('.file-name');
+          return (name ? name.textContent : '(ввод)') + (row.classList.contains('folder') ? '/' : '');
+        });
+    }
+
+    function activeName(frame) {
+      const row = frame.contentDocument.querySelector('#file-list .file-row.active .file-name');
+      return row ? row.textContent : null;
+    }
+
+    const OLD = '2020-01-01T00:00:00.000Z';
+
+    // ==================== схема v2 ====================
+    step('схема v2: засеваем монолит');
+    await deleteDb();
+    await seedLegacy({
+      version: 2,
+      currentId: 'f2',
+      savedAt: OLD,
+      welcome: { content: '# Добро пожаловать в MDEditor\n\nстарая справка', updatedAt: OLD },
+      files: [
+        { id: 'f1', name: 'альфа.md', content: '# Альфа', updatedAt: OLD },
+        { id: 'f2', name: 'бета.md', content: '# Бета', updatedAt: OLD },
+      ],
+    });
+
+    let frame = await bootFrame();
+    const namesV2 = namesIn(frame);
+    check('v2: оба файла на месте',
+      namesV2.includes('альфа.md') && namesV2.includes('бета.md'), JSON.stringify(namesV2));
+    check('v2: справка осталась призрачной строкой',
+      namesV2.includes('добро-пожаловать.md'), JSON.stringify(namesV2));
+    check('v2: папок не появилось', namesV2.every((n) => !n.endsWith('/')), JSON.stringify(namesV2));
+    check('v2: открыт тот же файл, что был', activeName(frame) === 'бета.md', String(activeName(frame)));
+    check('v2: содержимое доехало',
+      /Бета/.test(frame.contentDocument.getElementById('preview-body').textContent),
+      frame.contentDocument.getElementById('preview-body').textContent.slice(0, 80));
+
+    const afterV2 = await readDb();
+    check('v2: файлы разложены по отдельным записям', afterV2.files.length === 2,
+      JSON.stringify(afterV2.files.map((f) => f.name)));
+    check('v2: у записей проставлен parentId = null',
+      afterV2.files.every((f) => f.parentId === null), JSON.stringify(afterV2.files.map((f) => [f.name, f.parentId])));
+    check('v2: метаданные помечены версией 3', afterV2.meta && afterV2.meta.version === 3,
+      JSON.stringify(afterV2.meta && afterV2.meta.version));
+    check('v2: справка переехала в метаданные',
+      afterV2.meta && afterV2.meta.welcome && /старая справка/.test(afterV2.meta.welcome.content));
+    check('v2: старый монолит удалён из базы', afterV2.legacy === null,
+      JSON.stringify(afterV2.legacy));
+
+    frame.remove();
+    await sleep(200);
+
+    // ==================== схема v1 ====================
+    // В v1 справка лежала обычным файлом в общем списке; миграция должна
+    // вынуть её оттуда в призрачный раздел.
+    step('схема v1: засеваем монолит без поля version');
+    await deleteDb();
+    await seedLegacy({
+      currentId: 'w1',
+      savedAt: OLD,
+      files: [
+        { id: 'g1', name: 'гамма.md', content: '# Гамма', updatedAt: OLD },
+        { id: 'w1', name: 'добро-пожаловать.md', content: '# Добро пожаловать в MDEditor\n\nсправка из v1', updatedAt: OLD },
+      ],
+    });
+
+    frame = await bootFrame();
+    const namesV1 = namesIn(frame);
+    check('v1: обычный файл на месте', namesV1.includes('гамма.md'), JSON.stringify(namesV1));
+    check('v1: справка ровно одна', namesV1.filter((n) => n === 'добро-пожаловать.md').length === 1,
+      JSON.stringify(namesV1));
+    check('v1: справка стала призрачной строкой',
+      Boolean(frame.contentDocument.querySelector('#file-list .file-row.ghost')));
+    check('v1: открытой осталась справка', activeName(frame) === 'добро-пожаловать.md',
+      String(activeName(frame)));
+
+    const afterV1 = await readDb();
+    check('v1: в store файлов только обычный файл', afterV1.files.length === 1,
+      JSON.stringify(afterV1.files.map((f) => f.name)));
+    check('v1: справка не попала в store файлов',
+      afterV1.files.every((f) => f.name !== 'добро-пожаловать.md'));
+    check('v1: справка лежит в метаданных',
+      afterV1.meta && afterV1.meta.welcome && /справка из v1/.test(afterV1.meta.welcome.content));
+    check('v1: старый монолит удалён', afterV1.legacy === null);
+
+    out.push('');
+    out.push('ИТОГО: ' + passed + ' пройдено, ' + failed + ' провалено');
+    flush();
+    document.title = failed === 0 ? 'ALL-PASS' : 'FAILURES-' + failed;
+  })().catch((error) => {
+    document.getElementById('results').textContent += '\nИСКЛЮЧЕНИЕ: ' + (error && error.stack || error);
+    document.title = 'FAILURES-CRASH';
+  });
+  </script>
+</body>
+</html>

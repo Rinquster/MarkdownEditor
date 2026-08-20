@@ -68,7 +68,6 @@
   --radius-lg: 8px;
   --radius-xl: 10px;
 
-  --app-header-height: 61px;
   --sidebar-width: 280px;
   --shadow-overlay: 0 24px 70px rgb(0 0 0 / 45%);
 
@@ -129,7 +128,7 @@ button {
 
 .app-header {
   flex: 0 0 auto;
-  min-height: var(--app-header-height);
+  min-height: 61px;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -269,7 +268,7 @@ button {
   color: var(--color-text-secondary);
 }
 
-.zip-button {
+.header-action {
   display: flex;
   align-items: center;
   gap: 7px;
@@ -285,7 +284,7 @@ button {
   transition: background-color 160ms ease;
 }
 
-.zip-button:hover { background: var(--color-bg-hover); }
+.header-action:hover { background: var(--color-bg-hover); }
 
 /* ============ Layout ============ */
 
@@ -338,9 +337,33 @@ body.resizing {
   text-transform: uppercase;
   color: var(--color-text-muted);
   border-bottom: 1px solid var(--color-border);
+  gap: 8px;
 }
 
-.pane-actions { display: flex; gap: 2px; }
+.pane-title > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-actions { display: flex; gap: 2px; align-items: center; }
+
+/* разрушающее действие отделено от «создать»: промах мимо плюса не должен
+   стоить всего содержимого панели */
+.pane-actions button.danger {
+  margin-left: 6px;
+  border-left: 1px solid var(--color-border);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  padding-left: 6px;
+  width: 34px;
+}
+
+.pane-actions button.danger:hover {
+  color: var(--color-warning-text);
+  background: color-mix(in srgb, var(--color-danger) 30%, transparent);
+  border-color: var(--color-danger);
+}
 
 .pane-actions button {
   width: 30px;
@@ -472,7 +495,7 @@ body.resizing {
 .file-menu-button:hover { color: var(--color-text-primary); background: var(--color-bg-elevated); }
 
 .file-name-input {
-  width: 100%;
+  min-width: 0;
   min-height: 28px;
   margin: 4px 6px;
   padding: 0 8px;
@@ -485,6 +508,46 @@ body.resizing {
 }
 
 .file-name-input.invalid { border-color: var(--color-danger); }
+
+/* строка переименования повторяет отступ вложенности через inline-паддинг */
+.file-rename-holder {
+  display: flex;
+  min-width: 0;
+  padding-right: 6px;
+}
+
+.file-rename-holder .file-name-input { flex: 1 1 auto; }
+
+/* ---- дерево папок ---- */
+
+.file-twisty {
+  flex: 0 0 auto;
+  width: 13px;
+  margin-left: -3px;
+  display: grid;
+  place-items: center;
+  color: var(--color-text-muted);
+  transition: transform 140ms ease;
+}
+
+.file-twisty.open { transform: rotate(90deg); }
+
+/* распорка под стрелку у файлов: выравнивает их иконки с иконками папок */
+.file-twisty.empty { visibility: hidden; }
+
+.file-row.folder .file-icon { color: var(--color-accent-text); }
+.file-row.folder .file-name { font-weight: 600; }
+.file-row:hover .file-twisty { color: var(--color-text-primary); }
+
+/* перетаскивание внутри списка */
+.file-row.dragging { opacity: 0.45; }
+
+.file-row.drop-target {
+  background: color-mix(in srgb, var(--color-accent) 26%, transparent);
+  border-color: var(--color-accent-border);
+}
+
+.file-row.drop-target .file-main-button { color: var(--color-text-primary); }
 
 /* призрачный файл-справка: отдельный раздел над основным списком */
 .file-row.ghost .file-name {
@@ -503,13 +566,50 @@ body.resizing {
 
 .sidebar-footer {
   flex: 0 0 auto;
-  padding: 8px 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 33px;
+  padding: 6px 10px 6px 14px;
   font-size: 12px;
   color: var(--color-text-muted);
   border-top: 1px solid var(--color-border);
+}
+
+#status-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+}
+
+.status-text {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* предложение отменить удаление живёт прямо в статусной строке */
+.status-action {
+  flex: 0 0 auto;
+  margin-left: auto;
+  min-height: 22px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-accent-text);
+  background: var(--color-accent-subtle);
+  border: 1px solid var(--color-accent-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background-color 160ms ease, color 160ms ease;
+}
+
+.status-action:hover {
+  color: var(--color-text-primary);
+  background: var(--color-accent);
 }
 
 /* ============ Content ============ */
@@ -774,6 +874,56 @@ body.resizing {
   background: transparent;
   border: 0;
   font-size: 0.86em;
+}
+
+/* блок кода в обёртке: кнопка копирования не должна уезжать вместе
+   с горизонтальной прокруткой самого <pre>, поэтому позиционируется от обёртки */
+.code-block {
+  position: relative;
+}
+
+.code-copy {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  color: var(--color-text-muted);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  opacity: 0;
+  user-select: none;
+  transition: opacity 120ms ease, color 160ms ease, background-color 160ms ease, border-color 160ms ease;
+}
+
+.code-block:hover .code-copy,
+.code-copy:focus-visible { opacity: 1; }
+
+.code-copy:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+  border-color: var(--color-border-strong);
+}
+
+.code-copy.copied {
+  opacity: 1;
+  color: var(--color-accent-text);
+  border-color: var(--color-accent-border);
+}
+
+.code-copy.failed {
+  opacity: 1;
+  color: var(--color-warning-text);
+  border-color: var(--color-danger);
+}
+
+/* на устройствах без наведения кнопка видна всегда, иначе до неё не добраться */
+@media (hover: none) {
+  .code-copy { opacity: 1; }
 }
 
 .markdown-body table {

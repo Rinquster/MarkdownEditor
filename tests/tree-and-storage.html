@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>MDEditor — дерево и хранилище</title>
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+  <header class="app-header">
+    <div class="brand"><span class="brand-mark">MD</span><h1>MD</h1></div>
+    <div class="segmented">
+      <button type="button" id="mode-preview-button">Просмотр</button>
+      <button type="button" id="mode-editor-button">Редактор</button>
+    </div>
+    <div class="header-settings">
+      <select id="preview-font-select"><option value="Lato">Lato</option></select>
+      <button type="button" id="preview-size-dec">−</button><span id="preview-size-value">17</span>
+      <button type="button" id="preview-size-inc">+</button>
+      <button type="button" id="editor-size-dec">−</button><span id="editor-size-value">14</span>
+      <button type="button" id="editor-size-inc">+</button>
+      <button type="button" id="copy-doc-button"><span>Текст</span></button>
+      <button type="button" id="download-zip-button"><span>ZIP</span></button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar" id="sidebar">
+      <div class="pane-title"><span>Файлы</span>
+        <div class="pane-actions">
+          <button type="button" id="new-file-button">+</button>
+          <button type="button" id="new-folder-button">D+</button>
+          <button type="button" id="delete-all-button">X</button>
+          <button type="button" id="upload-button">↑</button>
+        </div>
+      </div>
+      <div id="file-list" class="file-list"></div>
+      <div class="sidebar-footer"><span id="status-line">…</span></div>
+    </aside>
+    <div id="sidebar-resizer" class="sidebar-resizer"></div>
+    <main class="content">
+      <div id="preview-pane" class="preview-pane"><div id="preview-body" class="markdown-body"></div></div>
+      <div id="editor-pane" class="editor-pane" hidden><textarea id="editor"></textarea></div>
+      <div id="welcome-pane" class="welcome-pane" hidden><div class="welcome-card"></div></div>
+    </main>
+  </div>
+
+  <div id="file-context-menu" class="context-menu" hidden></div>
+  <div id="dialog-overlay" class="dialog-overlay" hidden>
+    <div class="dialog"><p id="dialog-message"></p><div id="dialog-buttons" class="dialog-buttons"></div></div>
+  </div>
+  <input id="upload-input" type="file" multiple hidden>
+  <pre id="results" style="position:fixed;left:-99999px"></pre>
+
+  <script src="../vendor/marked.min.js"></script>
+  <script src="../vendor/jszip.min.js"></script>
+  <script>
+  (async () => {
+    const out = []; let passed = 0, failed = 0;
+    const flush = () => {
+      const node = document.getElementById('results');
+      if (node) node.textContent = out.join('\n');
+    };
+    const check = (name, ok, detail) => {
+      ok ? passed++ : failed++;
+      out.push((ok ? 'PASS  ' : 'FAIL  ') + name + (ok || !detail ? '' : '\n        → ' + detail));
+      flush();
+    };
+    const step = (label) => { out.push('.. ' + label); flush(); };
+    window.addEventListener('error', (e) => {
+      out.push('ОШИБКА: ' + e.message + ' @ ' + e.filename + ':' + e.lineno);
+      flush();
+    });
+    window.addEventListener('unhandledrejection', (e) => {
+      out.push('ОТКАЗ ПРОМИСА: ' + (e.reason && e.reason.stack || e.reason));
+      flush();
+    });
+    const el = (id) => document.getElementById(id);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    const finish = () => {
+      out.push(''); out.push('ИТОГО: ' + passed + ' пройдено, ' + failed + ' провалено');
+      el('results').textContent = out.join('\n');
+      document.title = failed === 0 ? 'ALL-PASS' : 'FAILURES-' + failed;
+    };
+
+    step('сброс базы');
+    // ---- чистая база до загрузки приложения ----
+    await new Promise((resolve) => {
+      const request = indexedDB.deleteDatabase('mdeditor');
+      request.onsuccess = request.onerror = request.onblocked = () => resolve();
+    });
+    try { localStorage.removeItem('mdeditor-emergency'); } catch {}
+
+    step('база сброшена');
+    let capturedBlob = null;
+    const realCreateUrl = URL.createObjectURL.bind(URL);
+    URL.createObjectURL = (blob) => { capturedBlob = blob; return realCreateUrl(blob); };
+
+    await new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = '../js/app.js';
+      script.onload = resolve;
+      script.onerror = reject;
+      document.body.appendChild(script);
+    });
+
+    step('app.js загружен');
+    for (let i = 0; i < 60 && el('file-list').children.length === 0; i++) await sleep(50);
+
+    step('init отработал');
+    // ---- вспомогательное ----
+    const rows = () => Array.from(document.querySelectorAll('#file-list .file-row'));
+    const rowByName = (name) => rows().find((r) => {
+      const el2 = r.querySelector('.file-name');
+      return el2 && el2.textContent === name;
+    });
+    const nameList = () => rows().map((r) => {
+      const n = r.querySelector('.file-name');
+      return (n ? n.textContent : '(ввод)') + (r.classList.contains('folder') ? '/' : '');
+    });
+    const indentOf = (row) => {
+      const b = row.querySelector('.file-main-button');
+      return b ? parseInt(b.style.paddingLeft, 10) : -1;
+    };
+
+    async function commitRename(name) {
+      await sleep(40);
+      const input = document.querySelector('.file-name-input');
+      if (!input) return false;
+      input.value = name;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      await sleep(60);
+      return true;
+    }
+
+    async function menuAction(row, label) {
+      step('menuAction: строка есть? ' + Boolean(row));
+      if (!row) return false;
+      const trigger = row.querySelector('.file-menu-button');
+      step('menuAction: кнопка меню есть? ' + Boolean(trigger));
+      trigger.click();
+      await sleep(30);
+      const items = Array.from(document.querySelectorAll('#file-context-menu button'));
+      step('menuAction: пунктов ' + items.length + ' [' + items.map((b) => b.textContent).join(', ') + ']');
+      const button = items.find((b) => b.textContent === label);
+      if (!button) return false;
+      button.click();
+      step('menuAction: пункт нажат');
+      await sleep(50);
+      return true;
+    }
+
+    function dragTo(sourceRow, targetEl) {
+      const dt = new DataTransfer();
+      sourceRow.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
+      targetEl.dispatchEvent(new DragEvent('dragover', { bubbles: true, dataTransfer: dt }));
+      targetEl.dispatchEvent(new DragEvent('drop', { bubbles: true, dataTransfer: dt }));
+      sourceRow.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: dt }));
+    }
+
+    async function readDb() {
+      const db = await new Promise((res, rej) => {
+        const r = indexedDB.open('mdeditor');
+        r.onsuccess = () => res(r.result);
+        r.onerror = () => rej(r.error);
+      });
+      const get = (store, key) => new Promise((res) => {
+        const os = db.transaction(store, 'readonly').objectStore(store);
+        const r = key === undefined ? os.getAll() : os.get(key);
+        r.onsuccess = () => res(r.result);
+      });
+      const filesRec = await get('files');
+      const metaRec = await get('meta', 'meta');
+      db.close();
+      return { files: filesRec || [], meta: metaRec || null };
+    }
+
+    // ================= 2.2 создание папок и файлов =================
+    step('создаём папку');
+    el('new-folder-button').click();
+    check('создание папки открыло поле ввода', Boolean(document.querySelector('.file-name-input')));
+    await commitRename('глава-1');
+    check('папка «глава-1» появилась в дереве', Boolean(rowByName('глава-1')), nameList().join(' | '));
+    check('строка папки помечена классом folder',
+      Boolean(rowByName('глава-1')) && rowByName('глава-1').classList.contains('folder'));
+
+    // после создания папка становится активной — новый файл должен лечь внутрь
+    el('new-file-button').click();
+    await commitRename('вступление.md');
+    const intro = rowByName('вступление.md');
+    check('файл создан', Boolean(intro), nameList().join(' | '));
+    check('файл лежит внутри папки (отступ больше)',
+      Boolean(intro) && indentOf(intro) > indentOf(rowByName('глава-1')),
+      'отступы: файл ' + (intro ? indentOf(intro) : '?') + ', папка ' + indentOf(rowByName('глава-1')));
+
+    // ================= сворачивание =================
+    rowByName('глава-1').querySelector('.file-main-button').click();
+    await sleep(40);
+    check('свёрнутая папка прячет содержимое', !rowByName('вступление.md'), nameList().join(' | '));
+    rowByName('глава-1').querySelector('.file-main-button').click();
+    await sleep(40);
+    check('раскрытие возвращает содержимое', Boolean(rowByName('вступление.md')));
+
+    // ================= вложенная папка через контекстное меню =================
+    const okMenu = await menuAction(rowByName('глава-1'), 'Новая папка здесь');
+    check('в меню папки есть «Новая папка здесь»', okMenu);
+    await commitRename('картинки');
+    const nested = rowByName('картинки');
+    check('вложенная папка создана', Boolean(nested), nameList().join(' | '));
+    check('вложенная папка глубже родителя',
+      Boolean(nested) && indentOf(nested) > indentOf(rowByName('глава-1')));
+
+    // ================= пустая папка в корне =================
+    // активная папка сейчас «картинки» — создаём папку там же и вытаскиваем в корень
+    el('new-folder-button').click();
+    await commitRename('черновики');
+    check('третья папка создана', Boolean(rowByName('черновики')), nameList().join(' | '));
+
+    // ================= 2.6 перенос перетаскиванием =================
+    dragTo(rowByName('черновики'), el('file-list'));
+    await sleep(60);
+    const drafts = rowByName('черновики');
+    check('папка перетащена в корень', Boolean(drafts) && indentOf(drafts) === 10,
+      'отступ: ' + (drafts ? indentOf(drafts) : '?') + ', дерево: ' + nameList().join(' | '));
+
+    dragTo(rowByName('вступление.md'), rowByName('черновики'));
+    await sleep(60);
+    check('файл перетащен в другую папку',
+      Boolean(rowByName('вступление.md')) && indentOf(rowByName('вступление.md')) > indentOf(rowByName('черновики')),
+      nameList().join(' | '));
+
+    // папку нельзя уронить в собственного потомка
+    const beforeCycle = nameList().join(' | ');
+    dragTo(rowByName('глава-1'), rowByName('картинки'));
+    await sleep(60);
+    check('папку нельзя уронить в своего потомка', nameList().join(' | ') === beforeCycle,
+      'было: ' + beforeCycle + '\n        стало: ' + nameList().join(' | '));
+
+    // ================= 2.1 хранилище: запись на файл =================
+    step('читаем базу');
+    await sleep(300);
+    const db1 = await readDb();
+    check('файлы лежат отдельными записями', db1.files.length === 1,
+      'записей: ' + db1.files.length + ' → ' + JSON.stringify(db1.files.map((f) => f.name)));
+    check('у записи файла есть parentId',
+      db1.files.length === 1 && Object.prototype.hasOwnProperty.call(db1.files[0], 'parentId'),
+      JSON.stringify(db1.files[0]));
+    check('монолитного слепка со всеми файлами нет',
+      db1.files.every((f) => !Array.isArray(f.files)));
+    check('схема помечена версией 3', db1.meta && db1.meta.version === 3,
+      JSON.stringify(db1.meta && db1.meta.version));
+    check('дерево папок сохранено в метаданных',
+      db1.meta && Array.isArray(db1.meta.folders) && db1.meta.folders.length === 3,
+      JSON.stringify(db1.meta && db1.meta.folders));
+
+    const emptyFolders = (db1.meta.folders || []).filter((folder) =>
+      !db1.files.some((f) => f.parentId === folder.id)
+      && !db1.meta.folders.some((f) => f.parentId === folder.id));
+    check('пустые папки сохраняются (их 2: «картинки» и «глава-1» без файлов)',
+      emptyFolders.length >= 1,
+      JSON.stringify(emptyFolders.map((f) => f.name)));
+    check('состояние раскрытых папок сохранено',
+      db1.meta && Array.isArray(db1.meta.expanded));
+
+    // ================= 2.4 ZIP с папками =================
+    step('собираем ZIP');
+    capturedBlob = null;
+    el('download-zip-button').click();
+    for (let i = 0; i < 40 && !capturedBlob; i++) await sleep(50);
+    check('ZIP собран', Boolean(capturedBlob));
+    if (capturedBlob) {
+      const zip = await window.JSZip.loadAsync(capturedBlob);
+      const entries = Object.keys(zip.files).sort();
+      const dirs = entries.filter((n) => zip.files[n].dir);
+      check('в архиве есть каталоги', dirs.length >= 2, JSON.stringify(entries));
+      check('файл лежит по своему пути',
+        entries.some((n) => n === 'черновики/вступление.md'), JSON.stringify(entries));
+      check('пустая папка попала в архив',
+        dirs.some((n) => n.startsWith('глава-1/картинки')), JSON.stringify(dirs));
+      out.push('--- содержимое ZIP ---');
+      out.push(entries.map((n) => (zip.files[n].dir ? '[D] ' : '    ') + n).join('\n'));
+    }
+
+    // ================= удаление папки с содержимым =================
+    step('удаляем папку, дерево: ' + nameList().join(' | '));
+    const okDelete = await menuAction(rowByName('черновики'), 'Удалить папку');
+    check('в меню папки есть «Удалить папку»', okDelete);
+    await sleep(40);
+    const dialogText = el('dialog-message').textContent;
+    check('диалог предупреждает о содержимом', /файлов: 1/.test(dialogText), dialogText);
+    Array.from(el('dialog-buttons').querySelectorAll('button'))
+      .find((b) => b.textContent === 'Удалить').click();
+    await sleep(120);
+    check('папка удалена вместе с файлом',
+      !rowByName('черновики') && !rowByName('вступление.md'), nameList().join(' | '));
+
+    await sleep(300);
+    const db2 = await readDb();
+    check('запись файла удалена из хранилища', db2.files.length === 0,
+      JSON.stringify(db2.files.map((f) => f.name)));
+    check('удалённая папка исчезла из метаданных',
+      (db2.meta.folders || []).every((f) => f.name !== 'черновики'),
+      JSON.stringify((db2.meta.folders || []).map((f) => f.name)));
+
+    out.push('--- итоговое дерево ---');
+    out.push(nameList().join('\n'));
+    finish();
+  })().catch((error) => {
+    document.getElementById('results').textContent = 'ИСКЛЮЧЕНИЕ: ' + (error && error.stack || error);
+    document.title = 'FAILURES-CRASH';
+  });
+  </script>
+</body>
+</html>

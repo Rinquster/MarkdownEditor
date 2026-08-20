@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>MDEditor — синхронизация вкладок</title>
+  <style>
+    body { margin: 0; font: 13px/1.4 monospace; background: #07090f; color: #ccd6e0; }
+    iframe { width: 760px; height: 300px; border: 1px solid #282c42; }
+    pre { white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <pre id="results">…</pre>
+  <div id="host"></div>
+
+  <script>
+  (async () => {
+    const out = []; let passed = 0, failed = 0;
+    const flush = () => { document.getElementById('results').textContent = out.join('\n'); };
+    const check = (name, ok, detail) => {
+      ok ? passed++ : failed++;
+      out.push((ok ? 'PASS  ' : 'FAIL  ') + name + (ok || !detail ? '' : '\n        → ' + detail));
+      flush();
+    };
+    const step = (label) => { out.push('.. ' + label); flush(); };
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    window.addEventListener('error', (e) => { out.push('ОШИБКА: ' + e.message); flush(); });
+
+    await new Promise((resolve) => {
+      const request = indexedDB.deleteDatabase('mdeditor');
+      request.onsuccess = request.onerror = request.onblocked = () => resolve();
+    });
+
+    async function bootFrame(label) {
+      // общий профиль браузера между тестами: чужой аварийный снимок
+      // подменил бы содержимое открытого файла
+      try { localStorage.removeItem('mdeditor-emergency'); } catch {}
+      const frame = document.createElement('iframe');
+      frame.title = label;
+      frame.src = '_app-frame.html';
+      document.getElementById('host').appendChild(frame);
+      await new Promise((resolve) => { frame.onload = resolve; });
+      const doc = frame.contentDocument;
+      for (let i = 0; i < 80 && doc.getElementById('file-list').children.length === 0; i++) await sleep(50);
+      await sleep(300);
+      return frame;
+    }
+
+    const namesIn = (frame) =>
+      Array.from(frame.contentDocument.querySelectorAll('#file-list .file-row'))
+        .map((row) => {
+          const n = row.querySelector('.file-name');
+          return (n ? n.textContent : '(ввод)') + (row.classList.contains('folder') ? '/' : '');
+        });
+
+    async function waitFor(frame, name, timeoutMs) {
+      const limit = Math.ceil((timeoutMs || 4000) / 50);
+      for (let i = 0; i < limit; i++) {
+        if (namesIn(frame).includes(name)) return true;
+        await sleep(50);
+      }
+      return false;
+    }
+
+    async function createNamed(frame, buttonId, name) {
+      frame.contentDocument.getElementById(buttonId).click();
+      await sleep(60);
+      const input = frame.contentDocument.querySelector('.file-name-input');
+      if (!input) return false;
+      input.value = name;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      await sleep(120);
+      return true;
+    }
+
+    // вкладки поднимаем последовательно: одновременный первый запуск на пустой
+    // базе — отдельный случай, здесь проверяется именно обмен изменениями
+    step('поднимаем вкладку A');
+    const frameA = await bootFrame('A');
+    step('поднимаем вкладку B');
+    const frameB = await bootFrame('B');
+
+    check('обе вкладки стартовали',
+      namesIn(frameA).length > 0 && namesIn(frameB).length > 0,
+      'A: ' + JSON.stringify(namesIn(frameA)) + '  B: ' + JSON.stringify(namesIn(frameB)));
+    check('справка не задвоилась при втором запуске',
+      namesIn(frameB).filter((n) => n === 'добро-пожаловать.md').length === 1,
+      JSON.stringify(namesIn(frameB)));
+
+    // ---- файл, созданный в A, доезжает до B ----
+    step('A создаёт файл');
+    await createNamed(frameA, 'new-file-button', 'из-вкладки-A.md');
+    check('файл создан в A', namesIn(frameA).includes('из-вкладки-A.md'), JSON.stringify(namesIn(frameA)));
+    const gotInB = await waitFor(frameB, 'из-вкладки-A.md', 5000);
+    check('B подхватила файл из A', gotInB, 'B: ' + JSON.stringify(namesIn(frameB)));
+
+    // ---- папка, созданная в B, доезжает до A ----
+    step('B создаёт папку');
+    await createNamed(frameB, 'new-folder-button', 'общая-папка');
+    check('папка создана в B', namesIn(frameB).includes('общая-папка/'), JSON.stringify(namesIn(frameB)));
+    const gotInA = await waitFor(frameA, 'общая-папка/', 5000);
+    check('A подхватила папку из B', gotInA, 'A: ' + JSON.stringify(namesIn(frameA)));
+
+    // ---- открытый в B редактор не подменяется чужой записью ----
+    step('B правит файл, A меняет дерево');
+    const docB = frameB.contentDocument;
+    const rowB = Array.from(docB.querySelectorAll('#file-list .file-row')).find((r) => {
+      const n = r.querySelector('.file-name');
+      return n && n.textContent === 'из-вкладки-A.md';
+    });
+    rowB.querySelector('.file-main-button').click();
+    await sleep(80);
+    docB.getElementById('mode-editor-button').click();
+    await sleep(80);
+
+    const editorB = docB.getElementById('editor');
+    const TYPED = '# правка из вкладки B\n\nэтот текст не должен исчезнуть';
+    editorB.focus();
+    editorB.value = TYPED;
+    editorB.dispatchEvent(new Event('input', { bubbles: true }));
+    await sleep(700); // даём автосохранению отработать
+
+    await createNamed(frameA, 'new-file-button', 'ещё-один.md');
+    const arrived = await waitFor(frameB, 'ещё-один.md', 5000);
+    check('B увидела новый файл из A', arrived, 'B: ' + JSON.stringify(namesIn(frameB)));
+    check('текст в редакторе B уцелел после перечитывания', editorB.value === TYPED,
+      JSON.stringify(editorB.value.slice(0, 80)));
+
+    // ---- удаление в A убирает файл и в B ----
+    step('A удаляет файл');
+    const docA = frameA.contentDocument;
+    const rowA = Array.from(docA.querySelectorAll('#file-list .file-row')).find((r) => {
+      const n = r.querySelector('.file-name');
+      return n && n.textContent === 'ещё-один.md';
+    });
+    rowA.querySelector('.file-menu-button').click();
+    await sleep(60);
+    const del = Array.from(docA.querySelectorAll('#file-context-menu button'))
+      .find((b) => b.textContent === 'Удалить');
+    del.click();
+    await sleep(80);
+    Array.from(docA.querySelectorAll('#dialog-buttons button'))
+      .find((b) => b.textContent === 'Удалить').click();
+    await sleep(300);
+
+    check('файл удалён в A', !namesIn(frameA).includes('ещё-один.md'), JSON.stringify(namesIn(frameA)));
+    let goneInB = false;
+    for (let i = 0; i < 100; i++) {
+      if (!namesIn(frameB).includes('ещё-один.md')) { goneInB = true; break; }
+      await sleep(50);
+    }
+    check('B подхватила удаление', goneInB, 'B: ' + JSON.stringify(namesIn(frameB)));
+
+    out.push('');
+    out.push('A: ' + JSON.stringify(namesIn(frameA)));
+    out.push('B: ' + JSON.stringify(namesIn(frameB)));
+    out.push('ИТОГО: ' + passed + ' пройдено, ' + failed + ' провалено');
+    flush();
+    document.title = failed === 0 ? 'ALL-PASS' : 'FAILURES-' + failed;
+  })().catch((error) => {
+    document.getElementById('results').textContent += '\nИСКЛЮЧЕНИЕ: ' + (error && error.stack || error);
+    document.title = 'FAILURES-CRASH';
+  });
+  </script>
+</body>
+</html>

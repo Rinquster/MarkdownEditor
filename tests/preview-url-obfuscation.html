@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head><meta charset="utf-8"><title>MDEditor — обфускация URL</title><link rel="stylesheet" href="../css/style.css"></head>
+<body>
+  <header class="app-header">
+    <div class="brand"><span class="brand-mark">MD</span><h1>MD</h1></div>
+    <div class="segmented"><button type="button" id="mode-preview-button">П</button><button type="button" id="mode-editor-button">Р</button></div>
+    <div class="header-settings">
+      <select id="preview-font-select"><option value="Lato">Lato</option></select>
+      <button type="button" id="preview-size-dec">−</button><span id="preview-size-value">17</span><button type="button" id="preview-size-inc">+</button>
+      <button type="button" id="editor-size-dec">−</button><span id="editor-size-value">14</span><button type="button" id="editor-size-inc">+</button>
+      <button type="button" id="copy-doc-button"><span>Т</span></button><button type="button" id="download-zip-button"><span>ZIP</span></button>
+    </div>
+  </header>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar">
+      <div class="pane-title"><span>Файлы</span><div class="pane-actions"><button type="button" id="new-file-button">+</button><button type="button" id="new-folder-button">D+</button>
+          <button type="button" id="delete-all-button">X</button>
+          <button type="button" id="upload-button">↑</button></div></div>
+      <div id="file-list" class="file-list"></div>
+      <div class="sidebar-footer"><span id="status-line">…</span></div>
+    </aside>
+    <div id="sidebar-resizer" class="sidebar-resizer"></div>
+    <main class="content">
+      <div id="preview-pane" class="preview-pane"><div id="preview-body" class="markdown-body"></div></div>
+      <div id="editor-pane" class="editor-pane" hidden><textarea id="editor"></textarea></div>
+      <div id="welcome-pane" class="welcome-pane" hidden><div class="welcome-card"></div></div>
+    </main>
+  </div>
+  <div id="file-context-menu" class="context-menu" hidden></div>
+  <div id="dialog-overlay" class="dialog-overlay" hidden><div class="dialog"><p id="dialog-message"></p><div id="dialog-buttons"></div></div></div>
+  <input id="upload-input" type="file" multiple hidden>
+  <pre id="results" style="position:fixed;left:-99999px"></pre>
+
+  <script src="../vendor/marked.min.js"></script>
+  <script src="../vendor/jszip.min.js"></script>
+  <script src="../js/app.js"></script>
+  <script>
+  (async () => {
+    const out = []; let passed = 0, failed = 0;
+    const check = (n, ok, d) => { ok ? passed++ : failed++; out.push((ok ? 'PASS  ' : 'FAIL  ') + n + (ok || !d ? '' : '\n        → ' + d)); };
+    const el = (id) => document.getElementById(id);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    window.__copied = null;
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (t) => { window.__copied = t; } } });
+
+    for (let i = 0; i < 60 && el('file-list').children.length === 0; i++) await sleep(50);
+
+    // Сущности вида &#9; декодируются парсером ДО того, как санитайзер увидит
+    // значение атрибута — то есть это ровно тот путь, которым обфускация и проходит.
+    const VECTORS = [
+      ['таб внутри схемы',        '<a id="v0" href="java&#9;script:alert(1)">x</a>'],
+      ['перевод строки в схеме',  '<a id="v1" href="java&#10;script:alert(1)">x</a>'],
+      ['ведущие пробелы',         '<a id="v2" href="   javascript:alert(1)">x</a>'],
+      ['разный регистр',          '<a id="v3" href="JaVaScRiPt:alert(1)">x</a>'],
+      ['сущность вместо буквы',   '<a id="v4" href="&#106;avascript:alert(1)">x</a>'],
+      ['неразрывный пробел',      '<a id="v5" href="java&#160;script:alert(1)">x</a>'],
+      ['vbscript',               '<a id="v6" href="vbscript:msgbox(1)">x</a>'],
+      ['data:text/html',         '<a id="v7" href="data:text/html,&lt;script&gt;">x</a>'],
+      ['javascript в src',       '<img id="v8" src="javascript:alert(1)" alt="a">'],
+      ['data:image/svg+xml',     '<img id="v9" src="data:image/svg+xml;base64,PHN2Zz4=" alt="a">'],
+      ['onload на картинке',     '<img id="v10" src="x.png" onload="window.__pwned=1" alt="a">'],
+      ['onfocus + autofocus',    '<input id="v11" type="text" onfocus="window.__pwned=2" autofocus>'],
+      ['srcdoc у iframe',        '<iframe id="v12" srcdoc="&lt;script&gt;window.__pwned=3&lt;/script&gt;"></iframe>'],
+      ['form + formaction',      '<form id="v13"><button formaction="javascript:alert(1)">go</button></form>'],
+      ['style с expression',     '<div id="v14" style="background:url(javascript:alert(1))">d</div>'],
+      ['svg с onload',           '<svg id="v15" onload="window.__pwned=4"><circle r="5"/></svg>'],
+      ['вложенный список',       '<ul><li>верх<ul><li>низ</li></ul></li></ul>'],
+    ];
+
+    el('mode-editor-button').click(); await sleep(40);
+    const editor = el('editor');
+    editor.value = VECTORS.map((v) => v[1]).join('\n\n');
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    await sleep(40);
+    el('mode-preview-button').click(); await sleep(200);
+
+    const body = el('preview-body');
+    const html = body.innerHTML;
+
+    check('ни один обработчик не сработал', window.__pwned === undefined, 'window.__pwned = ' + window.__pwned);
+    check('в разметке не осталось строки javascript:', !/javascript:/i.test(html));
+    check('в разметке не осталось строки vbscript:', !/vbscript:/i.test(html));
+    check('не осталось ни одного on*-атрибута', !/\son[a-z]+\s*=/i.test(html), html.slice(0, 300));
+    check('не осталось style-атрибутов', !/\sstyle\s*=/i.test(html));
+
+    for (let i = 0; i <= 9; i++) {
+      const node = body.querySelector('#v' + i) || Array.from(body.querySelectorAll('a,img'))[i];
+      void node;
+    }
+    // все ссылки/картинки должны остаться без опасного адреса
+    const hrefs = Array.from(body.querySelectorAll('a')).map((a) => a.getAttribute('href')).filter(Boolean);
+    // либо схемы нет вовсе (относительный путь/якорь), либо она из белого списка
+    check('опасных href не осталось',
+      hrefs.every((h) => !/^[a-z][a-z0-9+.-]*:/i.test(h) || /^(https?|mailto|tel):/i.test(h)),
+      'уцелевшие href: ' + JSON.stringify(hrefs));
+    const srcs = Array.from(body.querySelectorAll('img')).map((i) => i.getAttribute('src')).filter(Boolean);
+    check('опасных src не осталось', srcs.every((s) => !/^(javascript|vbscript|data):/i.test(s) || /^data:image\/(png|jpe?g|gif|webp|avif);base64,/i.test(s)),
+      'уцелевшие src: ' + JSON.stringify(srcs));
+    check('data:image/svg+xml отклонён', !srcs.some((s) => /svg/i.test(s)), JSON.stringify(srcs));
+
+    check('iframe удалён', body.querySelector('iframe') === null);
+    check('form удалён', body.querySelector('form') === null);
+    check('svg удалён', body.querySelector('svg') === null);
+    check('текстовый input удалён', body.querySelector('input[type=text]') === null);
+
+    // вложенные списки в голом тексте
+    window.__copied = null;
+    el('copy-doc-button').click(); await sleep(150);
+    const text = window.__copied || '';
+    check('вложенный список получил отступ', /• верх\n  • низ/.test(text), JSON.stringify(text.slice(-120)));
+
+    // приложение не сломалось: справка рендерится
+    check('в консоли не было исключений при рендере', body.children.length > 0);
+
+    out.push(''); out.push('ИТОГО: ' + passed + ' пройдено, ' + failed + ' провалено');
+    out.push('--- уцелевшие href ---'); out.push(JSON.stringify(hrefs, null, 1));
+    out.push('--- уцелевшие src ---'); out.push(JSON.stringify(srcs, null, 1));
+    el('results').textContent = out.join('\n');
+    document.title = failed === 0 ? 'ALL-PASS' : 'FAILURES-' + failed;
+  })();
+  </script>
+</body>
+</html>

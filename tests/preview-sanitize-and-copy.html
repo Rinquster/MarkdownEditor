@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>MDEditor — автотест этапа 1</title>
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+  <header class="app-header">
+    <div class="brand"><span class="brand-mark">MD</span><h1>MDEditor</h1></div>
+    <div class="segmented" role="group" aria-label="Режим работы">
+      <button type="button" id="mode-preview-button" aria-pressed="true">Просмотр</button>
+      <button type="button" id="mode-editor-button" aria-pressed="false">Редактор</button>
+    </div>
+    <div class="header-settings">
+      <select id="preview-font-select"><option value="Lato">Lato</option></select>
+      <button type="button" id="preview-size-dec">−</button><span id="preview-size-value">17</span>
+      <button type="button" id="preview-size-inc">+</button>
+      <button type="button" id="editor-size-dec">−</button><span id="editor-size-value">14</span>
+      <button type="button" id="editor-size-inc">+</button>
+      <button type="button" id="copy-doc-button" class="header-action"><span>Текст</span></button>
+      <button type="button" id="download-zip-button" class="header-action"><span>ZIP</span></button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar" id="sidebar">
+      <div class="pane-title"><span>Файлы</span>
+        <div class="pane-actions">
+          <button type="button" id="new-file-button">+</button>
+          <button type="button" id="new-folder-button">D+</button>
+          <button type="button" id="delete-all-button">X</button>
+          <button type="button" id="upload-button">↑</button>
+        </div>
+      </div>
+      <div id="file-list" class="file-list"></div>
+      <div class="sidebar-footer"><span id="status-line">…</span></div>
+    </aside>
+    <div id="sidebar-resizer" class="sidebar-resizer"></div>
+    <main class="content">
+      <div id="preview-pane" class="preview-pane"><div id="preview-body" class="markdown-body"></div></div>
+      <div id="editor-pane" class="editor-pane" hidden><textarea id="editor"></textarea></div>
+      <div id="welcome-pane" class="welcome-pane" hidden><div class="welcome-card"></div></div>
+    </main>
+  </div>
+
+  <div id="file-context-menu" class="context-menu" hidden></div>
+  <div id="dialog-overlay" class="dialog-overlay" hidden>
+    <div class="dialog" role="dialog" aria-modal="true">
+      <p id="dialog-message"></p><div id="dialog-buttons" class="dialog-buttons"></div>
+    </div>
+  </div>
+  <input id="upload-input" type="file" multiple hidden>
+
+  <pre id="results" style="position:fixed;left:-99999px"></pre>
+
+  <script src="../vendor/marked.min.js"></script>
+  <script src="../vendor/jszip.min.js"></script>
+  <script src="../js/app.js"></script>
+
+  <script>
+  (async () => {
+    const out = [];
+    let passed = 0, failed = 0;
+    const check = (name, ok, detail) => {
+      (ok ? passed++ : failed++);
+      out.push((ok ? 'PASS  ' : 'FAIL  ') + name + (ok || !detail ? '' : '\n        → ' + detail));
+    };
+
+    // перехватываем буфер обмена: реальный доступ в headless потребовал бы разрешения
+    window.__copied = null;
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: async (text) => { window.__copied = text; } },
+    });
+
+    const el = (id) => document.getElementById(id);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    // ждём, пока init() отработает и отрисует список
+    for (let i = 0; i < 60 && el('file-list').children.length === 0; i++) await sleep(50);
+
+    const DOC = [
+      '# Заголовок',
+      '',
+      '<img src=x onerror="window.__pwned = 1">',
+      '',
+      '<script>window.__pwned = 2;<\/script>',
+      '',
+      '[злая ссылка](javascript:alert(1))',
+      '',
+      '[java\tscript обход](java\tscript:alert(2))',
+      '',
+      '[хорошая ссылка](https://example.com)',
+      '',
+      '[якорь](#section)',
+      '',
+      '<div onclick="window.__pwned = 3" style="color:red" id="clobber">текст в диве<\/div>',
+      '',
+      '<iframe src="https://evil.test"><\/iframe>',
+      '',
+      '<img src="data:image/png;base64,iVBORw0KGgo=" alt="ок">',
+      '',
+      '<img src="data:text/html;base64,PHNjcmlwdD4=" alt="зло">',
+      '',
+      '- [x] сделано',
+      '- [ ] не сделано',
+      '',
+      '| Таблицы | Тоже |',
+      '| ------- | ---- |',
+      '| да      | ✓    |',
+      '',
+      '```js',
+      'const hello = "мир";',
+      'console.log(hello);',
+      '```',
+      '',
+      '> цитата',
+      '',
+      '1. первый',
+      '2. второй',
+      '',
+      '---',
+      '',
+      'Обычный **жирный** текст.',
+    ].join('\n');
+
+    // вводим документ через редактор — так же, как это делает пользователь
+    el('mode-editor-button').click();
+    await sleep(50);
+    const editor = el('editor');
+    editor.value = DOC;
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    await sleep(50);
+    el('mode-preview-button').click();
+    await sleep(150);
+
+    const body = el('preview-body');
+    const html = body.innerHTML;
+
+    // ---- 1.1 санитизация ----
+    check('обработчик onerror не выполнился', window.__pwned === undefined,
+      'window.__pwned = ' + window.__pwned);
+    check('атрибут onerror вырезан', !/onerror/i.test(html));
+    check('тег script удалён', body.querySelector('script') === null);
+    check('тег iframe удалён', body.querySelector('iframe') === null);
+    check('javascript:-ссылка обезврежена', !/javascript:/i.test(html));
+
+    const links = Array.from(body.querySelectorAll('a'));
+    const good = links.find((a) => (a.getAttribute('href') || '').includes('example.com'));
+    check('обычная ссылка сохранена', Boolean(good),
+      'найдено ссылок: ' + links.map((a) => a.getAttribute('href')).join(' | '));
+    check('внешняя ссылка получила target/rel',
+      Boolean(good) && good.target === '_blank' && /noopener/.test(good.rel));
+    const anchor = links.find((a) => (a.getAttribute('href') || '') === '#section');
+    check('якорная ссылка сохранена', Boolean(anchor));
+
+    const div = Array.from(body.querySelectorAll('div')).find((d) => /текст в диве/.test(d.textContent));
+    check('div сохранён, но onclick/style/id срезаны',
+      Boolean(div) && !div.hasAttribute('onclick') && !div.hasAttribute('style') && !div.hasAttribute('id'),
+      div ? 'атрибуты: ' + div.getAttributeNames().join(',') : 'div не найден');
+
+    const imgs = Array.from(body.querySelectorAll('img'));
+    const okImg = imgs.find((i) => i.getAttribute('alt') === 'ок');
+    const badImg = imgs.find((i) => i.getAttribute('alt') === 'зло');
+    check('data:image/png пропущен', Boolean(okImg) && (okImg.getAttribute('src') || '').startsWith('data:image/png'));
+    check('data:text/html заблокирован', Boolean(badImg) && !badImg.hasAttribute('src'),
+      badImg ? 'src = ' + badImg.getAttribute('src') : 'img не найден');
+
+    const boxes = Array.from(body.querySelectorAll('input[type=checkbox]'));
+    check('чекбоксы списка задач уцелели', boxes.length === 2, 'найдено: ' + boxes.length);
+    check('таблица уцелела', body.querySelectorAll('table tbody tr').length === 1);
+    check('класс language-js на коде сохранён', Boolean(body.querySelector('code.language-js')));
+
+    // ---- 1.2 кнопки копирования кода ----
+    const blocks = Array.from(body.querySelectorAll('.code-block'));
+    check('блок кода обёрнут', blocks.length === 1, 'найдено обёрток: ' + blocks.length);
+    const copyBtn = body.querySelector('.code-copy');
+    check('кнопка копирования создана', Boolean(copyBtn));
+    check('кнопка лежит в обёртке, а не внутри <pre>',
+      Boolean(copyBtn) && copyBtn.parentElement.classList.contains('code-block'));
+    check('у кнопки есть aria-label',
+      Boolean(copyBtn) && copyBtn.getAttribute('aria-label') === 'Скопировать код');
+
+    if (copyBtn) {
+      copyBtn.click();
+      await sleep(80);
+      check('код скопирован дословно',
+        window.__copied === 'const hello = "мир";\nconsole.log(hello);\n',
+        JSON.stringify(window.__copied));
+      check('кнопка показала успех', copyBtn.classList.contains('copied'));
+    }
+
+    // ---- 1.3 копирование документа голым текстом ----
+    window.__copied = null;
+    el('copy-doc-button').click();
+    await sleep(120);
+    const text = window.__copied || '';
+    check('документ скопирован', text.length > 0);
+    check('в тексте нет HTML-разметки', !/[<>]/.test(text.replace(/[<>]/g, (m) => m)) || !/<\w/.test(text),
+      JSON.stringify(text.slice(0, 200)));
+    check('подпись кнопки копирования не попала в текст', !/Скопировать код/.test(text));
+    check('заголовок присутствует', /^Заголовок$/m.test(text));
+    check('блок кода сохранён дословно', text.includes('const hello = "мир";'));
+    check('маркеры списка расставлены', /• сделано/.test(text) || /\[x\] сделано/.test(text),
+      JSON.stringify(text));
+    check('нумерованный список пронумерован', /1\. первый/.test(text) && /2\. второй/.test(text));
+    check('строка таблицы через табуляцию', /да\t✓/.test(text));
+    check('нет тройных переводов строк', !/\n{3,}/.test(text));
+
+    out.push('');
+    out.push('ИТОГО: ' + passed + ' пройдено, ' + failed + ' провалено');
+    out.push('--- скопированный текст ---');
+    out.push(text);
+    el('results').textContent = out.join('\n');
+    document.title = failed === 0 ? 'ALL-PASS' : 'FAILURES-' + failed;
+  })();
+  </script>
+</body>
+</html>
