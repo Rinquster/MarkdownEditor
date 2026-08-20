@@ -166,7 +166,6 @@ button {
   min-height: 61px;
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
   gap: 12px 16px;
   padding: 8px 16px;
   background: color-mix(in srgb, var(--color-bg-canvas) 92%, transparent);
@@ -231,35 +230,6 @@ button {
   border-color: var(--color-border-strong);
 }
 
-/* сведения о документе занимают свободное место между режимами и настройками */
-.doc-bar {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  padding: 0 8px;
-  font-size: 12px;
-  color: var(--color-text-muted);
-}
-
-.doc-path {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--color-text-secondary);
-}
-
-.doc-save { flex: 0 0 auto; }
-
-.doc-save.dirty { color: var(--color-warning-text); }
-
-.doc-stats {
-  flex: 0 0 auto;
-  font-variant-numeric: tabular-nums;
-}
-
 .header-icon {
   width: 32px;
   height: 32px;
@@ -275,13 +245,22 @@ button {
 
 .header-icon:hover { color: var(--color-text-primary); background: var(--color-bg-hover); }
 
+/* при нехватке места настройки прокручиваются по горизонтали, а не переносят
+   шапку на вторую строку; скроллбар скрыт */
 .header-settings {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
   gap: 12px 16px;
   margin-left: auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 4px 0; /* чтобы фокусная обводка кнопок не срезалась прокруткой */
 }
+
+.header-settings::-webkit-scrollbar { display: none; }
+
+.header-settings > * { flex: 0 0 auto; }
 
 .setting-group {
   display: flex;
@@ -1470,17 +1449,31 @@ body.resizing .split-resizer {
 
 /* ============ Узкие экраны ============ */
 
-@media (max-width: 900px) {
+/* Шапка ужимается ступенями и остаётся однострочной: сначала прячутся подписи
+   настроек (тултипы остаются), затем подписи кнопок-действий, затем заголовок. */
+@media (max-width: 1420px) {
   .setting-label { display: none; }
-  .doc-stats { display: none; }
+}
+
+@media (max-width: 1270px) {
+  .header-action span { display: none; }
+  .header-action { padding: 0 10px; }
+}
+
+@media (max-width: 1050px) {
+  .brand h1 { display: none; }
+}
+
+@media (max-width: 980px) {
+  .app-header { gap: 8px 10px; padding: 8px 10px; }
+  .header-settings { gap: 8px; }
+  .segmented button { padding: 0 9px; }
+  .stepper button { width: 24px; }
+  #preview-font-select { max-width: 108px; }
 }
 
 @media (max-width: 760px) {
-  .brand h1 { display: none; }
   .sidebar-toggle { display: grid; }
-  .doc-bar { order: 10; flex-basis: 100%; padding: 0; }
-  .header-action span { display: none; }
-  .header-action { padding: 0 10px; }
 
   /* Панель файлов становится выдвижной: на узком экране ей негде стоять рядом,
      а ужимать её до нечитаемой ширины — не выход. */

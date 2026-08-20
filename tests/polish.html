@@ -15,11 +15,6 @@
       <button type="button" id="mode-split-button">Вместе</button>
       <button type="button" id="mode-editor-button">Редактор</button>
     </div>
-    <div class="doc-bar">
-      <span id="doc-path" class="doc-path"></span>
-      <span id="doc-save" class="doc-save"></span>
-      <span id="doc-stats" class="doc-stats"></span>
-    </div>
     <div class="header-settings">
       <select id="preview-font-select"><option value="Lato">Lato</option><option value="Inter">Inter</option><option value="Roboto">Roboto</option><option value="Liberation Sans">Liberation Sans</option><option value="Liberation Serif">Liberation Serif</option></select>
       <button type="button" id="preview-size-dec">−</button><span id="preview-size-value">17</span>
@@ -183,30 +178,10 @@
     check('третье нажатие возвращает «как в системе»',
       root.dataset.theme === startTheme, root.dataset.theme);
 
-    // ================= 7.5 сведения о документе =================
-    step('сведения о документе');
-    check('показан путь открытого файла', el('doc-path').textContent.length > 0,
-      el('doc-path').textContent);
-    check('показано состояние сохранения', el('doc-save').textContent.length > 0,
-      el('doc-save').textContent);
-    check('показан счётчик слов', /слов|слово|слова/.test(el('doc-stats').textContent),
-      el('doc-stats').textContent);
-    check('показано время чтения', /мин чтения/.test(el('doc-stats').textContent),
-      el('doc-stats').textContent);
-
+    // переключаемся в редактор для следующих проверок
     el('mode-editor-button').click();
     await sleep(150);
     const editor = el('editor');
-    editor.value = 'один два три четыре пять';
-    editor.dispatchEvent(new Event('input', { bubbles: true }));
-    await sleep(60);
-    check('после правки состояние — «есть несохранённые»',
-      el('doc-save').classList.contains('dirty'), el('doc-save').textContent);
-    check('счётчик слов пересчитался', /^5 слов/.test(el('doc-stats').textContent),
-      el('doc-stats').textContent);
-    await sleep(900);
-    check('после записи состояние — «сохранено»',
-      !el('doc-save').classList.contains('dirty'), el('doc-save').textContent);
 
     // ================= 7.2 экспорт в HTML =================
     step('экспорт в HTML');
