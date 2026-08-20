@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#07090f">
+  <title>MDEditor</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20100%20100'%3E%3Ctext%20y='0.9em'%20font-size='90'%3E%F0%9F%93%9D%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-mark">MD</span>
+      <h1>MDEditor</h1>
+    </div>
+
+    <div class="segmented" role="group" aria-label="Режим работы">
+      <button type="button" id="mode-preview-button" aria-pressed="true">Просмотр</button>
+      <button type="button" id="mode-editor-button" aria-pressed="false">Редактор</button>
+    </div>
+
+    <div class="header-settings">
+      <div class="setting-group" title="Настройки просмотра: гарнитура и размер базового текста">
+        <span class="setting-label">Просмотр</span>
+        <select id="preview-font-select" aria-label="Шрифт просмотра">
+          <option value="Lato">Lato</option>
+          <option value="Inter">Inter</option>
+          <option value="Roboto">Roboto</option>
+          <option value="Whitney">Whitney</option>
+          <option value="Antiqua">Antiqua</option>
+          <option value="Liberation Sans">Liberation Sans</option>
+          <option value="Liberation Serif">Liberation Serif</option>
+        </select>
+        <div class="stepper" role="group" aria-label="Размер шрифта просмотра">
+          <button type="button" id="preview-size-dec" aria-label="Уменьшить">−</button>
+          <span id="preview-size-value">17</span>
+          <button type="button" id="preview-size-inc" aria-label="Увеличить">+</button>
+        </div>
+      </div>
+
+      <div class="setting-group" title="Размер шрифта редактора (Source Code Pro)">
+        <span class="setting-label">Редактор</span>
+        <div class="stepper" role="group" aria-label="Размер шрифта редактора">
+          <button type="button" id="editor-size-dec" aria-label="Уменьшить">−</button>
+          <span id="editor-size-value">14</span>
+          <button type="button" id="editor-size-inc" aria-label="Увеличить">+</button>
+        </div>
+      </div>
+
+      <button type="button" id="download-zip-button" class="zip-button" title="Скачать все файлы одним ZIP-архивом">
+        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 1a.75.75 0 0 1 .75.75v6.69l2.22-2.22a.75.75 0 1 1 1.06 1.06l-3.5 3.5a.75.75 0 0 1-1.06 0l-3.5-3.5a.75.75 0 0 1 1.06-1.06l2.22 2.22V1.75A.75.75 0 0 1 8 1ZM2.5 12.25a.75.75 0 0 1 .75.75v.75h9.5V13a.75.75 0 0 1 1.5 0v1.5a.75.75 0 0 1-.75.75h-11a.75.75 0 0 1-.75-.75V13a.75.75 0 0 1 .75-.75Z"/></svg>
+        <span>ZIP</span>
+      </button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar" id="sidebar">
+      <div class="pane-title">
+        <span>Файлы</span>
+        <div class="pane-actions">
+          <button type="button" id="new-file-button" title="Новый файл">
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 2.75a.75.75 0 0 1 .75.75v3.75h3.75a.75.75 0 0 1 0 1.5H8.75v3.75a.75.75 0 0 1-1.5 0V8.75H3.5a.75.75 0 0 1 0-1.5h3.75V3.5A.75.75 0 0 1 8 2.75Z"/></svg>
+          </button>
+          <button type="button" id="upload-button" title="Загрузить файлы с диска">
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 11a.75.75 0 0 1-.75-.75V3.56L5.03 5.78a.75.75 0 0 1-1.06-1.06l3.5-3.5a.75.75 0 0 1 1.06 0l3.5 3.5a.75.75 0 1 1-1.06 1.06L8.75 3.56v6.69A.75.75 0 0 1 8 11Zm-5.5 1.25a.75.75 0 0 1 .75.75v.75h9.5V13a.75.75 0 0 1 1.5 0v1.5a.75.75 0 0 1-.75.75h-11a.75.75 0 0 1-.75-.75V13a.75.75 0 0 1 .75-.75Z"/></svg>
+          </button>
+        </div>
+      </div>
+      <div id="file-list" class="file-list"></div>
+      <div class="sidebar-footer">
+        <span id="status-line">Файлы хранятся в вашем браузере</span>
+      </div>
+    </aside>
+
+    <div id="sidebar-resizer" class="sidebar-resizer" title="Потяните, чтобы изменить ширину; двойной клик — сброс"></div>
+
+    <main class="content">
+      <div id="preview-pane" class="preview-pane">
+        <div id="preview-body" class="markdown-body"></div>
+      </div>
+      <div id="editor-pane" class="editor-pane" hidden>
+        <textarea id="editor" spellcheck="false" placeholder="# Начните писать здесь…"></textarea>
+      </div>
+      <div id="welcome-pane" class="welcome-pane" hidden>
+        <div class="welcome-card">
+          <h2>Здесь пока пусто</h2>
+          <p>Перетащите <strong>.md-файлы</strong> в панель слева, загрузите их кнопкой <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8 11a.75.75 0 0 1-.75-.75V3.56L5.03 5.78a.75.75 0 0 1-1.06-1.06l3.5-3.5a.75.75 0 0 1 1.06 0l3.5 3.5a.75.75 0 1 1-1.06 1.06L8.75 3.56v6.69A.75.75 0 0 1 8 11Zm-5.5 1.25a.75.75 0 0 1 .75.75v.75h9.5V13a.75.75 0 0 1 1.5 0v1.5a.75.75 0 0 1-.75.75h-11a.75.75 0 0 1-.75-.75V13a.75.75 0 0 1 .75-.75Z"/></svg> или создайте новый файл кнопкой <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8 2.75a.75.75 0 0 1 .75.75v3.75h3.75a.75.75 0 0 1 0 1.5H8.75v3.75a.75.75 0 0 1-1.5 0V8.75H3.5a.75.75 0 0 1 0-1.5h3.75V3.5A.75.75 0 0 1 8 2.75Z"/></svg>.</p>
+          <p class="welcome-note">Всё, что вы загрузите и напишете, сохраняется в браузере (IndexedDB) и переживает перезагрузку страницы.</p>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div id="file-context-menu" class="context-menu" hidden></div>
+
+  <div id="dialog-overlay" class="dialog-overlay" hidden>
+    <div class="dialog" role="dialog" aria-modal="true">
+      <p id="dialog-message"></p>
+      <div id="dialog-buttons" class="dialog-buttons"></div>
+    </div>
+  </div>
+
+  <input id="upload-input" type="file" accept=".md,.markdown,.txt,text/plain,text/markdown" multiple hidden>
+
+  <script src="vendor/marked.min.js"></script>
+  <script src="vendor/jszip.min.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
