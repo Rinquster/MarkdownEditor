@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>MDEditor — удаление и отмена</title>
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+  <header class="app-header">
+    <div class="brand"><span class="brand-mark">MD</span><h1>MD</h1></div>
+    <div class="segmented">
+      <button type="button" id="mode-preview-button">Просмотр</button>
+      <button type="button" id="mode-editor-button">Редактор</button>
+    </div>
+    <div class="header-settings">
+      <select id="preview-font-select"><option value="Lato">Lato</option></select>
+      <button type="button" id="preview-size-dec">−</button><span id="preview-size-value">17</span>
+      <button type="button" id="preview-size-inc">+</button>
+      <button type="button" id="editor-size-dec">−</button><span id="editor-size-value">14</span>
+      <button type="button" id="editor-size-inc">+</button>
+      <button type="button" id="copy-doc-button"><span>Текст</span></button>
+      <button type="button" id="download-zip-button"><span>ZIP</span></button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar" id="sidebar">
+      <div class="pane-title"><span>Файлы</span>
+        <div class="pane-actions">
+          <button type="button" id="new-file-button">+</button>
+          <button type="button" id="new-folder-button">D+</button>
+          <button type="button" id="delete-all-button">X</button>
+          <button type="button" id="upload-button">↑</button>
+        </div>
+      </div>
+      <div id="file-list" class="file-list"></div>
+      <div class="sidebar-footer"><span id="status-line">…</span></div>
+    </aside>
+    <div id="sidebar-resizer" class="sidebar-resizer"></div>
+    <main class="content">
+      <div id="preview-pane" class="preview-pane"><div id="preview-body" class="markdown-body"></div></div>
+      <div id="editor-pane" class="editor-pane" hidden><textarea id="editor"></textarea></div>
+      <div id="welcome-pane" class="welcome-pane" hidden><div class="welcome-card"></div></div>
+    </main>
+  </div>
+
+  <div id="file-context-menu" class="context-menu" hidden></div>
+  <div id="dialog-overlay" class="dialog-overlay" hidden>
+    <div class="dialog"><p id="dialog-message"></p><div id="dialog-buttons" class="dialog-buttons"></div></div>
+  </div>
+  <input id="upload-input" type="file" multiple hidden>
+  <pre id="results" style="position:fixed;left:-99999px"></pre>
+
+  <script src="../vendor/marked.min.js"></script>
+  <script src="../vendor/jszip.min.js"></script>
+  <script>
+  (async () => {
+    const out = []; let passed = 0, failed = 0;
+    const flush = () => { document.getElementById('results').textContent = out.join('\n'); };
+    const check = (name, ok, detail) => {
+      ok ? passed++ : failed++;
+      out.push((ok ? 'PASS  ' : 'FAIL  ') + name + (ok || !detail ? '' : '\n        → ' + detail));
+      flush();
+    };
+    const step = (label) => { out.push('.. ' + label); flush(); };
+    const el = (id) => document.getElementById(id);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    window.addEventListener('error', (e) => { out.push('ОШИБКА: ' + e.message); flush(); });
+
+    await new Promise((resolve) => {
+      const request = indexedDB.deleteDatabase('mdeditor');
+      request.onsuccess = request.onerror = request.onblocked = () => resolve();
+    });
+    try { localStorage.removeItem('mdeditor-emergency'); } catch {}
+
+    await new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = '../js/app.js';
+      script.onload = resolve; script.onerror = reject;
+      document.body.appendChild(script);
+    });
+    for (let i = 0; i < 80 && el('file-list').children.length === 0; i++) await sleep(50);
+
+    // ---- вспомогательное ----
+    const rows = () => Array.from(document.querySelectorAll('#file-list .file-row'));
+    const rowByName = (name) => rows().find((r) => {
+      const n = r.querySelector('.file-name');
+      return n && n.textContent === name;
+    });
+    const names = () => rows().map((r) => {
+      const n = r.querySelector('.file-name');
+      return (n ? n.textContent : '(ввод)') + (r.classList.contains('folder') ? '/' : '');
+    });
+    const indentOf = (name) => {
+      const row = rowByName(name);
+      return row ? parseInt(row.querySelector('.file-main-button').style.paddingLeft, 10) : -1;
+    };
+    const statusText = () => {
+      const node = document.querySelector('#status-line .status-text');
+      return node ? node.textContent : el('status-line').textContent;
+    };
+    const undoButton = () => document.querySelector('#status-line .status-action');
+
+    async function createNamed(buttonId, name) {
+      el(buttonId).click();
+      await sleep(50);
+      const input = document.querySelector('.file-name-input');
+      if (!input) return false;
+      input.value = name;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      await sleep(70);
+      return true;
+    }
+
+    async function menuAction(row, label) {
+      row.querySelector('.file-menu-button').click();
+      await sleep(40);
+      const button = Array.from(document.querySelectorAll('#file-context-menu button'))
+        .find((b) => b.textContent === label);
+      if (!button) return false;
+      button.click();
+      await sleep(60);
+      return true;
+    }
+
+    async function answerDialog(label) {
+      await sleep(60);
+      const button = Array.from(el('dialog-buttons').querySelectorAll('button'))
+        .find((b) => b.textContent === label);
+      if (!button) return false;
+      button.click();
+      await sleep(150);
+      return true;
+    }
+
+    async function readDb() {
+      const db = await new Promise((res) => {
+        const r = indexedDB.open('mdeditor');
+        r.onsuccess = () => res(r.result);
+      });
+      const get = (store, key) => new Promise((res) => {
+        const os = db.transaction(store, 'readonly').objectStore(store);
+        const r = key === undefined ? os.getAll() : os.get(key);
+        r.onsuccess = () => res(r.result);
+      });
+      const filesRec = await get('files');
+      const metaRec = await get('meta', 'meta');
+      db.close();
+      return { files: filesRec || [], meta: metaRec || null };
+    }
+
+    // ---- готовим дерево ----
+    step('строим дерево');
+    await createNamed('new-folder-button', 'глава');
+    await createNamed('new-file-button', 'внутри.md');
+    // возвращаемся в корень через перетаскивание нового файла
+    await createNamed('new-file-button', 'второй-внутри.md');
+    const drag = (sourceRow, targetEl) => {
+      const dt = new DataTransfer();
+      sourceRow.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
+      targetEl.dispatchEvent(new DragEvent('dragover', { bubbles: true, dataTransfer: dt }));
+      targetEl.dispatchEvent(new DragEvent('drop', { bubbles: true, dataTransfer: dt }));
+      sourceRow.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: dt }));
+    };
+    drag(rowByName('второй-внутри.md'), el('file-list'));
+    await sleep(80);
+    check('дерево готово: папка с файлом и файл в корне',
+      indentOf('внутри.md') > indentOf('глава') && indentOf('второй-внутри.md') === 10,
+      names().join(' | '));
+
+    // ================= 3.1 отмена удаления файла =================
+    step('удаляем одиночный файл');
+    await menuAction(rowByName('второй-внутри.md'), 'Удалить');
+    await answerDialog('Удалить');
+    check('файл удалён', !rowByName('второй-внутри.md'), names().join(' | '));
+    check('в статусе предложена отмена', Boolean(undoButton()), statusText());
+    check('статус называет удалённое', /второй-внутри\.md/.test(statusText()), statusText());
+
+    await sleep(300);
+    const afterDelete = await readDb();
+    check('запись файла ушла из хранилища',
+      afterDelete.files.every((f) => f.name !== 'второй-внутри.md'),
+      JSON.stringify(afterDelete.files.map((f) => f.name)));
+
+    undoButton().click();
+    await sleep(250);
+    check('файл вернулся', Boolean(rowByName('второй-внутри.md')), names().join(' | '));
+    check('вернулся в корень, а не внутрь папки', indentOf('второй-внутри.md') === 10,
+      names().join(' | '));
+
+    await sleep(350);
+    const afterUndo = await readDb();
+    check('запись файла восстановлена в хранилище',
+      afterUndo.files.some((f) => f.name === 'второй-внутри.md'),
+      JSON.stringify(afterUndo.files.map((f) => f.name)));
+
+    // ================= отмена удаления папки с содержимым =================
+    step('удаляем папку с файлом внутри');
+    await menuAction(rowByName('глава'), 'Удалить папку');
+    await answerDialog('Удалить');
+    check('папка и её файл исчезли', !rowByName('глава') && !rowByName('внутри.md'),
+      names().join(' | '));
+
+    undoButton().click();
+    await sleep(250);
+    check('папка вернулась', Boolean(rowByName('глава')), names().join(' | '));
+    check('файл вернулся именно внутрь папки',
+      Boolean(rowByName('внутри.md')) && indentOf('внутри.md') > indentOf('глава'),
+      names().join(' | '));
+
+    // ================= коллизия имени при отмене =================
+    step('удаляем файл и занимаем его имя до отмены');
+    await menuAction(rowByName('второй-внутри.md'), 'Удалить');
+    await answerDialog('Удалить');
+    await createNamed('new-file-button', 'второй-внутри.md');
+    check('новый файл занял освободившееся имя', Boolean(rowByName('второй-внутри.md')),
+      names().join(' | '));
+    if (undoButton()) {
+      undoButton().click();
+      await sleep(250);
+    }
+    const twins = rows().filter((r) => /второй-внутри/.test(r.querySelector('.file-name').textContent));
+    check('после отмены оба файла на месте под разными именами', twins.length === 2,
+      names().join(' | '));
+
+    // ================= 3.2 удалить всё =================
+    step('нажимаем «Удалить всё»');
+    const beforeAll = names();
+    el('delete-all-button').click();
+    await sleep(80);
+    const dialogText = el('dialog-message').textContent;
+    check('диалог называет количество', /файлов: \d+/.test(dialogText), dialogText);
+    check('диалог предупреждает про справку', /[Сс]правка останется/.test(dialogText), dialogText);
+    check('диалог обещает возможность отмены', /отменить/.test(dialogText), dialogText);
+
+    await answerDialog('Удалить всё');
+    check('панель опустела, кроме справки',
+      names().length === 1 && names()[0] === 'добро-пожаловать.md', names().join(' | '));
+    check('справка не тронута', Boolean(rowByName('добро-пожаловать.md')));
+    check('после массового удаления тоже предложена отмена', Boolean(undoButton()), statusText());
+
+    await sleep(350);
+    const afterAll = await readDb();
+    check('хранилище очищено от файлов', afterAll.files.length === 0,
+      JSON.stringify(afterAll.files.map((f) => f.name)));
+    check('папки убраны из метаданных', (afterAll.meta.folders || []).length === 0,
+      JSON.stringify((afterAll.meta.folders || []).map((f) => f.name)));
+    check('справка уцелела в метаданных',
+      Boolean(afterAll.meta.welcome && afterAll.meta.welcome.content));
+
+    undoButton().click();
+    await sleep(300);
+    check('всё вернулось целиком', names().length === beforeAll.length,
+      'было: ' + beforeAll.join(' | ') + '\n        стало: ' + names().join(' | '));
+    check('вложенность восстановлена',
+      indentOf('внутри.md') > indentOf('глава'), names().join(' | '));
+
+    await sleep(350);
+    const afterAllUndo = await readDb();
+    // сколько файлов ждать — берём из дерева: выше по тесту проверка коллизии
+    // имён намеренно добавила лишний файл, константа тут была бы неверной
+    const visibleFiles = rows()
+      .filter((r) => !r.classList.contains('folder') && !r.classList.contains('ghost')).length;
+    check('файлы вернулись в хранилище', afterAllUndo.files.length === visibleFiles,
+      'в дереве ' + visibleFiles + ', в базе ' + JSON.stringify(afterAllUndo.files.map((f) => f.name)));
+    check('папка вернулась в метаданные', (afterAllUndo.meta.folders || []).length === 1,
+      JSON.stringify((afterAllUndo.meta.folders || []).map((f) => f.name)));
+
+    // ================= справка под кнопку не попадает, но удаляется лично =================
+    step('удаляем справку через её меню');
+    await menuAction(rowByName('добро-пожаловать.md'), 'Удалить');
+    await answerDialog('Удалить');
+    check('справка удалена лично', !rowByName('добро-пожаловать.md'), names().join(' | '));
+    undoButton().click();
+    await sleep(250);
+    check('отмена возвращает и справку', Boolean(rowByName('добро-пожаловать.md')),
+      names().join(' | '));
+
+    // ================= пустая панель =================
+    step('удаляем всё и жмём кнопку ещё раз');
+    el('delete-all-button').click();
+    await answerDialog('Удалить всё');
+    await sleep(100);
+    el('delete-all-button').click();
+    await sleep(120);
+    check('на пустой панели кнопка не открывает диалог', el('dialog-overlay').hidden);
+    check('и честно говорит, что удалять нечего', /[Нн]ечего удалять/.test(statusText()),
+      statusText());
+
+    out.push('');
+    out.push('ИТОГО: ' + passed + ' пройдено, ' + failed + ' провалено');
+    flush();
+    document.title = failed === 0 ? 'ALL-PASS' : 'FAILURES-' + failed;
+  })().catch((error) => {
+    document.getElementById('results').textContent += '\nИСКЛЮЧЕНИЕ: ' + (error && error.stack || error);
+    document.title = 'FAILURES-CRASH';
+  });
+  </script>
+</body>
+</html>

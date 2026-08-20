@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>MDEditor (фрейм для тестов)</title>
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+  <!-- Минимальный хост приложения: тот же набор узлов, что в index.html.
+       Используется тестами, которым нужно несколько независимых копий
+       приложения на одной странице (миграция, синхронизация вкладок). -->
+
+  <header class="app-header">
+    <div class="brand"><span class="brand-mark">MD</span><h1>MD</h1></div>
+    <div class="segmented">
+      <button type="button" id="mode-preview-button">Просмотр</button>
+      <button type="button" id="mode-editor-button">Редактор</button>
+    </div>
+    <div class="header-settings">
+      <select id="preview-font-select"><option value="Lato">Lato</option></select>
+      <button type="button" id="preview-size-dec">−</button><span id="preview-size-value">17</span>
+      <button type="button" id="preview-size-inc">+</button>
+      <button type="button" id="editor-size-dec">−</button><span id="editor-size-value">14</span>
+      <button type="button" id="editor-size-inc">+</button>
+      <button type="button" id="copy-doc-button"><span>Текст</span></button>
+      <button type="button" id="download-zip-button"><span>ZIP</span></button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar" id="sidebar">
+      <div class="pane-title"><span>Файлы</span>
+        <div class="pane-actions">
+          <button type="button" id="new-file-button">+</button>
+          <button type="button" id="new-folder-button">D+</button>
+          <button type="button" id="delete-all-button">X</button>
+          <button type="button" id="upload-button">↑</button>
+        </div>
+      </div>
+      <div id="file-list" class="file-list"></div>
+      <div class="sidebar-footer"><span id="status-line">…</span></div>
+    </aside>
+    <div id="sidebar-resizer" class="sidebar-resizer"></div>
+    <main class="content">
+      <div id="preview-pane" class="preview-pane"><div id="preview-body" class="markdown-body"></div></div>
+      <div id="editor-pane" class="editor-pane" hidden><textarea id="editor"></textarea></div>
+      <div id="welcome-pane" class="welcome-pane" hidden><div class="welcome-card"></div></div>
+    </main>
+  </div>
+
+  <div id="file-context-menu" class="context-menu" hidden></div>
+  <div id="dialog-overlay" class="dialog-overlay" hidden>
+    <div class="dialog"><p id="dialog-message"></p><div id="dialog-buttons" class="dialog-buttons"></div></div>
+  </div>
+  <input id="upload-input" type="file" multiple hidden>
+
+  <script src="../vendor/marked.min.js"></script>
+  <script src="../vendor/jszip.min.js"></script>
+  <script src="../js/app.js"></script>
+</body>
+</html>

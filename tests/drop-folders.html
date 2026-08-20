@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>MDEditor — дроп папок</title>
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+  <header class="app-header">
+    <div class="brand"><span class="brand-mark">MD</span><h1>MD</h1></div>
+    <div class="segmented">
+      <button type="button" id="mode-preview-button">Просмотр</button>
+      <button type="button" id="mode-editor-button">Редактор</button>
+    </div>
+    <div class="header-settings">
+      <select id="preview-font-select"><option value="Lato">Lato</option></select>
+      <button type="button" id="preview-size-dec">−</button><span id="preview-size-value">17</span>
+      <button type="button" id="preview-size-inc">+</button>
+      <button type="button" id="editor-size-dec">−</button><span id="editor-size-value">14</span>
+      <button type="button" id="editor-size-inc">+</button>
+      <button type="button" id="copy-doc-button"><span>Текст</span></button>
+      <button type="button" id="download-zip-button"><span>ZIP</span></button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar" id="sidebar">
+      <div class="pane-title"><span>Файлы</span>
+        <div class="pane-actions">
+          <button type="button" id="new-file-button">+</button>
+          <button type="button" id="new-folder-button">D+</button>
+          <button type="button" id="delete-all-button">X</button>
+          <button type="button" id="upload-button">↑</button>
+        </div>
+      </div>
+      <div id="file-list" class="file-list"></div>
+      <div class="sidebar-footer"><span id="status-line">…</span></div>
+    </aside>
+    <div id="sidebar-resizer" class="sidebar-resizer"></div>
+    <main class="content">
+      <div id="preview-pane" class="preview-pane"><div id="preview-body" class="markdown-body"></div></div>
+      <div id="editor-pane" class="editor-pane" hidden><textarea id="editor"></textarea></div>
+      <div id="welcome-pane" class="welcome-pane" hidden><div class="welcome-card"></div></div>
+    </main>
+  </div>
+
+  <div id="file-context-menu" class="context-menu" hidden></div>
+  <div id="dialog-overlay" class="dialog-overlay" hidden>
+    <div class="dialog"><p id="dialog-message"></p><div id="dialog-buttons" class="dialog-buttons"></div></div>
+  </div>
+  <input id="upload-input" type="file" multiple hidden>
+  <pre id="results" style="position:fixed;left:-99999px"></pre>
+
+  <script src="../vendor/marked.min.js"></script>
+  <script src="../vendor/jszip.min.js"></script>
+  <script>
+  (async () => {
+    const out = []; let passed = 0, failed = 0;
+    const flush = () => { document.getElementById('results').textContent = out.join('\n'); };
+    const check = (name, ok, detail) => {
+      ok ? passed++ : failed++;
+      out.push((ok ? 'PASS  ' : 'FAIL  ') + name + (ok || !detail ? '' : '\n        → ' + detail));
+      flush();
+    };
+    const step = (label) => { out.push('.. ' + label); flush(); };
+    const el = (id) => document.getElementById(id);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    window.addEventListener('error', (e) => { out.push('ОШИБКА: ' + e.message); flush(); });
+
+    await new Promise((resolve) => {
+      const request = indexedDB.deleteDatabase('mdeditor');
+      request.onsuccess = request.onerror = request.onblocked = () => resolve();
+    });
+    try { localStorage.removeItem('mdeditor-emergency'); } catch {}
+
+    await new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = '../js/app.js';
+      script.onload = resolve; script.onerror = reject;
+      document.body.appendChild(script);
+    });
+    for (let i = 0; i < 80 && el('file-list').children.length === 0; i++) await sleep(50);
+
+    // ---- поддельные записи файловой системы ----
+    // Настоящие FileSystemEntry берутся только из dataTransfer.items[i].webkitGetAsEntry(),
+    // подсунуть их в синтетическое событие нельзя. Зато можно повторить их интерфейс:
+    // приложение обращается только к isFile / isDirectory / fullPath / file() / createReader().
+    function fileEntry(fullPath, content, type) {
+      const name = fullPath.split('/').pop();
+      return {
+        isFile: true, isDirectory: false, name, fullPath,
+        file(resolve) { resolve(new File([content], name, { type: type || 'text/markdown' })); },
+      };
+    }
+
+    function dirEntry(fullPath, children) {
+      const name = fullPath.split('/').pop();
+      return {
+        isFile: false, isDirectory: true, name, fullPath,
+        createReader() {
+          let served = false;
+          return {
+            // как настоящий reader: отдаёт порцию, затем пустой массив
+            readEntries(resolve) {
+              if (served) { resolve([]); return; }
+              served = true;
+              resolve(children.slice());
+            },
+          };
+        },
+      };
+    }
+
+    function dropEntries(entries, targetEl) {
+      const transfer = {
+        types: ['Files'],
+        files: [],
+        items: entries.map((entry) => ({ webkitGetAsEntry: () => entry })),
+      };
+      const event = new DragEvent('drop', { bubbles: true, cancelable: true });
+      // dataTransfer — геттер на прототипе; собственное свойство его перекрывает
+      Object.defineProperty(event, 'dataTransfer', { value: transfer });
+      (targetEl || el('file-list')).dispatchEvent(event);
+    }
+
+    // отвечает на диалоги, пока они появляются
+    function autoAnswer(label, stopAfterMs) {
+      const until = Date.now() + (stopAfterMs || 6000);
+      let clicks = 0;
+      const timer = setInterval(() => {
+        if (Date.now() > until) { clearInterval(timer); return; }
+        if (el('dialog-overlay').hidden) return;
+        const button = Array.from(el('dialog-buttons').querySelectorAll('button'))
+          .find((b) => b.textContent === label);
+        if (button) { button.click(); clicks += 1; }
+      }, 40);
+      return { stop: () => clearInterval(timer), count: () => clicks };
+    }
+
+    const rows = () => Array.from(document.querySelectorAll('#file-list .file-row'));
+    const tree = () => rows().map((row) => {
+      const indent = parseInt(row.querySelector('.file-main-button').style.paddingLeft, 10);
+      const name = row.querySelector('.file-name').textContent;
+      return ' '.repeat(Math.max(0, (indent - 10) / 14 * 2)) + name + (row.classList.contains('folder') ? '/' : '');
+    });
+    const has = (name) => rows().some((r) => r.querySelector('.file-name').textContent === name);
+    const indentOf = (name) => {
+      const row = rows().find((r) => r.querySelector('.file-name').textContent === name);
+      return row ? parseInt(row.querySelector('.file-main-button').style.paddingLeft, 10) : -1;
+    };
+
+    // ================= дроп структуры =================
+    step('роняем папку со вложенностью');
+    dropEntries([
+      dirEntry('/глава-1', [
+        fileEntry('/глава-1/вступление.md', '# Вступление'),
+        dirEntry('/глава-1/разделы', [
+          fileEntry('/глава-1/разделы/первый.md', '# Первый раздел'),
+        ]),
+        dirEntry('/глава-1/пустая', []),
+      ]),
+      fileEntry('/заметка.md', '# Заметка'),
+      fileEntry('/данные.csv', 'a,b,c', 'text/csv'),
+    ]);
+    await sleep(900);
+
+    check('корневая папка создана', has('глава-1'), tree().join(' | '));
+    check('файл внутри папки', has('вступление.md') && indentOf('вступление.md') > indentOf('глава-1'),
+      tree().join(' | '));
+    check('вложенная папка создана', has('разделы'), tree().join(' | '));
+    check('файл во вложенной папке ещё глубже',
+      indentOf('первый.md') > indentOf('разделы') && indentOf('разделы') > indentOf('глава-1'),
+      tree().join(' | '));
+    check('пустая папка из дропа сохранена', has('пустая'), tree().join(' | '));
+    check('корневой файл лёг в корень', has('заметка.md') && indentOf('заметка.md') === 10,
+      tree().join(' | '));
+    check('csv отсеян', !has('данные.csv'), tree().join(' | '));
+
+    out.push('--- дерево после дропа ---');
+    out.push(tree().join('\n'));
+    flush();
+
+    // ================= повторный дроп: «Заменить все» =================
+    step('роняем те же файлы повторно, отвечаем «Заменить все»');
+    const answerer = autoAnswer('Заменить все', 8000);
+    dropEntries([
+      dirEntry('/глава-1', [
+        fileEntry('/глава-1/вступление.md', '# Вступление ВТОРАЯ ВЕРСИЯ'),
+        dirEntry('/глава-1/разделы', [
+          fileEntry('/глава-1/разделы/первый.md', '# Первый ВТОРАЯ ВЕРСИЯ'),
+        ]),
+      ]),
+      fileEntry('/заметка.md', '# Заметка ВТОРАЯ ВЕРСИЯ'),
+    ]);
+    await sleep(1500);
+    answerer.stop();
+
+    check('«Заменить все» спросили один раз', answerer.count() === 1,
+      'нажатий: ' + answerer.count());
+    check('дубликатов файлов не появилось',
+      rows().filter((r) => r.querySelector('.file-name').textContent === 'вступление.md').length === 1,
+      tree().join(' | '));
+
+    const introRow = rows().find((r) => r.querySelector('.file-name').textContent === 'вступление.md');
+    introRow.querySelector('.file-main-button').click();
+    await sleep(200);
+    check('содержимое заменено',
+      /ВТОРАЯ ВЕРСИЯ/.test(el('preview-body').textContent),
+      el('preview-body').textContent.slice(0, 60));
+
+    // ================= третий дроп: «Пропустить все» =================
+    step('роняем ещё раз, отвечаем «Пропустить все»');
+    const skipper = autoAnswer('Пропустить все', 8000);
+    dropEntries([
+      fileEntry('/заметка.md', '# Заметка ТРЕТЬЯ ВЕРСИЯ'),
+      dirEntry('/глава-1', [
+        fileEntry('/глава-1/вступление.md', '# Вступление ТРЕТЬЯ ВЕРСИЯ'),
+      ]),
+    ]);
+    await sleep(1500);
+    skipper.stop();
+
+    const introRow2 = rows().find((r) => r.querySelector('.file-name').textContent === 'вступление.md');
+    introRow2.querySelector('.file-main-button').click();
+    await sleep(200);
+    check('«Пропустить все» оставило прежнее содержимое',
+      /ВТОРАЯ ВЕРСИЯ/.test(el('preview-body').textContent),
+      el('preview-body').textContent.slice(0, 60));
+
+    // ================= структура доехала до хранилища =================
+    await sleep(400);
+    const db = await new Promise((resolve) => {
+      const request = indexedDB.open('mdeditor');
+      request.onsuccess = async () => {
+        const conn = request.result;
+        const get = (store, key) => new Promise((res) => {
+          const os = conn.transaction(store, 'readonly').objectStore(store);
+          const r = key === undefined ? os.getAll() : os.get(key);
+          r.onsuccess = () => res(r.result);
+        });
+        const filesRec = await get('files');
+        const metaRec = await get('meta', 'meta');
+        conn.close();
+        resolve({ files: filesRec || [], meta: metaRec || null });
+      };
+    });
+
+    check('в хранилище ровно три файла', db.files.length === 3,
+      JSON.stringify(db.files.map((f) => f.name)));
+    check('в хранилище три папки', (db.meta.folders || []).length === 3,
+      JSON.stringify((db.meta.folders || []).map((f) => f.name)));
+    const rootFiles = db.files.filter((f) => f.parentId === null);
+    check('в корне лежит один файл', rootFiles.length === 1,
+      JSON.stringify(rootFiles.map((f) => f.name)));
+
+    out.push('');
+    out.push('ИТОГО: ' + passed + ' пройдено, ' + failed + ' провалено');
+    out.push('--- итоговое дерево ---');
+    out.push(tree().join('\n'));
+    flush();
+    document.title = failed === 0 ? 'ALL-PASS' : 'FAILURES-' + failed;
+  })().catch((error) => {
+    document.getElementById('results').textContent += '\nИСКЛЮЧЕНИЕ: ' + (error && error.stack || error);
+    document.title = 'FAILURES-CRASH';
+  });
+  </script>
+</body>
+</html>
