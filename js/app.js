@@ -53,7 +53,6 @@
 
   const MODES = ['preview', 'split', 'editor'];
   const THEMES = ['auto', 'light', 'dark'];
-  const READING_SPEED = 180; // слов в минуту — для оценки времени чтения
 
   const DEFAULT_SETTINGS = {
     mode: 'preview',
@@ -106,9 +105,6 @@
   const tocList = el('toc-list');
   const tocButton = el('toc-button');
   const themeButton = el('theme-button');
-  const docPath = el('doc-path');
-  const docSave = el('doc-save');
-  const docStats = el('doc-stats');
   const findBar = el('find-bar');
   const findInput = el('find-input');
   const findCount = el('find-count');
@@ -433,7 +429,6 @@
     renderToolbar();
     renderMain();
     applyTocVisibility();
-    updateDocBar();
     if (!findBar.hidden) runFind(true);
   }
 
@@ -597,9 +592,8 @@
     metaDirty = false;
     if (fileIds.length === 0 && removed.length === 0 && !withMeta) return Promise.resolve();
 
-    updateDocBar();
     return enqueueWrite(() => writeChanges(fileIds, removed, withMeta))
-      .then(() => { announceChange(); updateDocBar(); })
+      .then(() => { announceChange(); })
       .catch((error) => {
         console.error(error);
         // запись не удалась — возвращаем пометки, чтобы не потерять правки
@@ -1709,7 +1703,6 @@
     markMetaDirty();
     renderFiles();
     renderMain();
-    updateDocBar();
     setSidebarOpen(false); // на узком экране панель выдвижная: выбрали файл — закрыли
     scheduleAutosave();
   }
@@ -1752,51 +1745,6 @@
     saveSettings();
     applyTheme();
   });
-
-  // ---------- Сведения о документе ----------
-
-  function countWords(text) {
-    const trimmed = (text || '').trim();
-    if (!trimmed) return 0;
-    return trimmed.split(/\s+/).length;
-  }
-
-  function hasUnsavedChanges() {
-    return dirtyFileIds.size > 0 || removedFileIds.size > 0 || metaDirty;
-  }
-
-  function updateDocBar() {
-    const file = fileById(currentId);
-    if (!file) {
-      docPath.textContent = '';
-      docSave.textContent = '';
-      docSave.className = 'doc-save';
-      docStats.textContent = '';
-      return;
-    }
-    const path = file.id === WELCOME_ID ? file.name : pathOf(file);
-    docPath.textContent = path;
-    docPath.title = path;
-
-    const dirty = hasUnsavedChanges();
-    docSave.textContent = dirty ? 'есть несохранённые' : 'сохранено';
-    docSave.className = 'doc-save' + (dirty ? ' dirty' : '');
-
-    const words = countWords(file.content);
-    const minutes = Math.max(1, Math.round(words / READING_SPEED));
-    docStats.textContent = words === 0
-      ? 'пусто'
-      : `${words} ${plural(words, 'слово', 'слова', 'слов')} · ~${minutes} мин чтения`;
-  }
-
-  function plural(count, one, few, many) {
-    const mod100 = count % 100;
-    if (mod100 >= 11 && mod100 <= 14) return many;
-    const mod10 = count % 10;
-    if (mod10 === 1) return one;
-    if (mod10 >= 2 && mod10 <= 4) return few;
-    return many;
-  }
 
   // ---------- Поиск внутри документа ----------
 
@@ -2976,7 +2924,6 @@ hr { border: 0; border-top: 1px solid #d0d7de; margin: 1.8em 0; }
     markDirty(file.id);
     scheduleAutosave();
     scheduleHighlight();
-    updateDocBar();
     if (settings.mode === 'split') schedulePreviewRefresh(file);
   });
 

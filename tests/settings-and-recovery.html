@@ -15,11 +15,6 @@
       <button type="button" id="mode-split-button">Вместе</button>
       <button type="button" id="mode-editor-button">Редактор</button>
     </div>
-    <div class="doc-bar">
-      <span id="doc-path" class="doc-path"></span>
-      <span id="doc-save" class="doc-save"></span>
-      <span id="doc-stats" class="doc-stats"></span>
-    </div>
     <div class="header-settings">
       <select id="preview-font-select"><option value="Lato">Lato</option><option value="Inter">Inter</option><option value="Roboto">Roboto</option><option value="Liberation Sans">Liberation Sans</option><option value="Liberation Serif">Liberation Serif</option></select>
       <button type="button" id="preview-size-dec">−</button><span id="preview-size-value">17</span>
@@ -314,8 +309,6 @@
     check('Ctrl+S сообщает о сохранении',
       Boolean(statusText) && /Сохранено/.test(statusText.textContent),
       statusText ? statusText.textContent : 'нет строки состояния');
-    check('после явного сохранения нет несохранённых',
-      !el('doc-save').classList.contains('dirty'), el('doc-save').textContent);
 
     // ================= очистка поиска по Escape =================
     step('поиск: очистка по Escape');
