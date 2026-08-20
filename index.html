@@ -4,21 +4,33 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#07090f">
-  <title>MDEditor</title>
+  <title>Markdown Editor</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20100%20100'%3E%3Ctext%20y='0.9em'%20font-size='90'%3E%F0%9F%93%9D%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 
   <header class="app-header">
+    <button type="button" id="sidebar-toggle" class="sidebar-toggle"
+            title="Показать список файлов" aria-label="Показать список файлов" aria-expanded="false">
+      <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M2 4.25A.75.75 0 0 1 2.75 3.5h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 4.25Zm0 3.75A.75.75 0 0 1 2.75 7.25h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 8Zm0 3.75a.75.75 0 0 1 .75-.75h10.5a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1-.75-.75Z"/></svg>
+    </button>
+
     <div class="brand">
       <span class="brand-mark">MD</span>
-      <h1>MDEditor</h1>
+      <h1>Markdown Editor</h1>
     </div>
 
     <div class="segmented" role="group" aria-label="Режим работы">
       <button type="button" id="mode-preview-button" aria-pressed="true">Просмотр</button>
+      <button type="button" id="mode-split-button" aria-pressed="false">Вместе</button>
       <button type="button" id="mode-editor-button" aria-pressed="false">Редактор</button>
+    </div>
+
+    <div class="doc-bar">
+      <span id="doc-path" class="doc-path"></span>
+      <span id="doc-save" class="doc-save"></span>
+      <span id="doc-stats" class="doc-stats"></span>
     </div>
 
     <div class="header-settings">
@@ -28,8 +40,6 @@
           <option value="Lato">Lato</option>
           <option value="Inter">Inter</option>
           <option value="Roboto">Roboto</option>
-          <option value="Whitney">Whitney</option>
-          <option value="Antiqua">Antiqua</option>
           <option value="Liberation Sans">Liberation Sans</option>
           <option value="Liberation Serif">Liberation Serif</option>
         </select>
@@ -49,6 +59,13 @@
         </div>
       </div>
 
+      <button type="button" id="theme-button" class="header-icon" title="Тема"></button>
+
+      <button type="button" id="toc-button" class="header-action" title="Оглавление документа">
+        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M2 3.75A.75.75 0 0 1 2.75 3h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 3.75Zm2 3.5A.75.75 0 0 1 4.75 6.5h8.5a.75.75 0 0 1 0 1.5h-8.5A.75.75 0 0 1 4 7.25Zm2 3.5a.75.75 0 0 1 .75-.75h6.5a.75.75 0 0 1 0 1.5h-6.5a.75.75 0 0 1-.75-.75ZM2.25 8.25a1 1 0 1 1 0-2 1 1 0 0 1 0 2Zm2 3.5a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z"/></svg>
+        <span>Оглавление</span>
+      </button>
+
       <button type="button" id="copy-doc-button" class="header-action" title="Скопировать весь документ голым текстом, без разметки">
         <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/><path fill="currentColor" d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/></svg>
         <span>Текст</span>
@@ -60,6 +77,8 @@
       </button>
     </div>
   </header>
+
+  <div id="sidebar-backdrop" class="sidebar-backdrop" hidden></div>
 
   <div class="layout">
     <aside class="sidebar" id="sidebar">
@@ -80,21 +99,37 @@
           </button>
         </div>
       </div>
+      <div class="file-search">
+        <input id="file-search-input" type="search" autocomplete="off" spellcheck="false"
+               placeholder="Поиск по именам и тексту" aria-label="Поиск по файлам">
+      </div>
       <div id="file-list" class="file-list"></div>
       <div class="sidebar-footer">
         <span id="status-line">Файлы хранятся в вашем браузере</span>
       </div>
     </aside>
 
-    <div id="sidebar-resizer" class="sidebar-resizer" title="Потяните, чтобы изменить ширину; двойной клик — сброс"></div>
+    <div id="sidebar-resizer" class="sidebar-resizer" tabindex="0" role="separator"
+         aria-orientation="vertical" aria-label="Ширина панели файлов"
+         aria-valuemin="210" aria-valuemax="520" aria-valuenow="280"
+         title="Потяните или измените стрелками; двойной клик — сброс"></div>
 
-    <main class="content">
+    <main class="content" id="content">
+      <div id="editor-pane" class="editor-pane" hidden>
+        <div id="editor-toolbar" class="editor-toolbar" role="toolbar" aria-label="Форматирование"></div>
+        <div class="editor-surface">
+          <pre id="editor-highlight" class="editor-highlight" aria-hidden="true"></pre>
+          <textarea id="editor" spellcheck="false" placeholder="# Начните писать здесь…"></textarea>
+        </div>
+      </div>
+      <div id="split-resizer" class="split-resizer" title="Потяните, чтобы изменить пропорцию; двойной клик — поровну" hidden></div>
       <div id="preview-pane" class="preview-pane">
         <div id="preview-body" class="markdown-body"></div>
       </div>
-      <div id="editor-pane" class="editor-pane" hidden>
-        <textarea id="editor" spellcheck="false" placeholder="# Начните писать здесь…"></textarea>
-      </div>
+      <aside id="toc-panel" class="toc-panel" hidden aria-label="Оглавление">
+        <div class="toc-title">Оглавление</div>
+        <nav id="toc-list" class="toc-list"></nav>
+      </aside>
       <div id="welcome-pane" class="welcome-pane" hidden>
         <div class="welcome-card">
           <h2>Здесь пока пусто</h2>
@@ -103,6 +138,15 @@
         </div>
       </div>
     </main>
+  </div>
+
+  <div id="find-bar" class="find-bar" hidden role="search">
+    <input id="find-input" type="search" autocomplete="off" spellcheck="false"
+           placeholder="Найти в документе" aria-label="Найти в документе">
+    <span id="find-count" class="find-count"></span>
+    <button type="button" id="find-prev" title="Предыдущее совпадение (Shift+Enter)" aria-label="Предыдущее совпадение">↑</button>
+    <button type="button" id="find-next" title="Следующее совпадение (Enter)" aria-label="Следующее совпадение">↓</button>
+    <button type="button" id="find-close" title="Закрыть (Esc)" aria-label="Закрыть поиск">✕</button>
   </div>
 
   <div id="file-context-menu" class="context-menu" hidden></div>
@@ -117,7 +161,6 @@
   <input id="upload-input" type="file" accept=".md,.markdown,.txt,text/plain,text/markdown" multiple hidden>
 
   <script src="vendor/marked.min.js"></script>
-  <script src="vendor/jszip.min.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

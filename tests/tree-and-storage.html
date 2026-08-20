@@ -11,19 +11,21 @@
     <div class="brand"><span class="brand-mark">MD</span><h1>MD</h1></div>
     <div class="segmented">
       <button type="button" id="mode-preview-button">Просмотр</button>
-      <button type="button" id="mode-editor-button">Редактор</button>
+      <button type="button" id="mode-split-button">Вместе</button><button type="button" id="mode-editor-button">Редактор</button>
     </div>
     <div class="header-settings">
-      <select id="preview-font-select"><option value="Lato">Lato</option></select>
+      <select id="preview-font-select"><option value="Lato">Lato</option><option value="Inter">Inter</option><option value="Roboto">Roboto</option><option value="Liberation Sans">Liberation Sans</option><option value="Liberation Serif">Liberation Serif</option></select>
       <button type="button" id="preview-size-dec">−</button><span id="preview-size-value">17</span>
       <button type="button" id="preview-size-inc">+</button>
       <button type="button" id="editor-size-dec">−</button><span id="editor-size-value">14</span>
       <button type="button" id="editor-size-inc">+</button>
-      <button type="button" id="copy-doc-button"><span>Текст</span></button>
+      <button type="button" id="theme-button"></button><span id="doc-path"></span><span id="doc-save"></span><span id="doc-stats"></span><button type="button" id="toc-button"><span>Оглавление</span></button><button type="button" id="copy-doc-button"><span>Текст</span></button>
       <button type="button" id="download-zip-button"><span>ZIP</span></button>
     </div>
   </header>
 
+  <button type="button" id="sidebar-toggle"></button>
+  <div id="sidebar-backdrop" class="sidebar-backdrop" hidden></div>
   <div class="layout">
     <aside class="sidebar" id="sidebar">
       <div class="pane-title"><span>Файлы</span>
@@ -34,17 +36,21 @@
           <button type="button" id="upload-button">↑</button>
         </div>
       </div>
+      <div class="file-search"><input id="file-search-input" type="search"></div>
       <div id="file-list" class="file-list"></div>
       <div class="sidebar-footer"><span id="status-line">…</span></div>
     </aside>
     <div id="sidebar-resizer" class="sidebar-resizer"></div>
-    <main class="content">
+    <main class="content" id="content">
       <div id="preview-pane" class="preview-pane"><div id="preview-body" class="markdown-body"></div></div>
-      <div id="editor-pane" class="editor-pane" hidden><textarea id="editor"></textarea></div>
+      <div id="editor-pane" class="editor-pane" hidden><div id="editor-toolbar" class="editor-toolbar"></div><div class="editor-surface"><pre id="editor-highlight" class="editor-highlight" aria-hidden="true"></pre><textarea id="editor"></textarea></div></div>
+      <div id="split-resizer" class="split-resizer" hidden></div>
+      <aside id="toc-panel" class="toc-panel" hidden><div class="toc-title">Оглавление</div><nav id="toc-list" class="toc-list"></nav></aside>
       <div id="welcome-pane" class="welcome-pane" hidden><div class="welcome-card"></div></div>
     </main>
   </div>
 
+  <div id="find-bar" class="find-bar" hidden><input id="find-input" type="search"><span id="find-count" class="find-count"></span><button type="button" id="find-prev">↑</button><button type="button" id="find-next">↓</button><button type="button" id="find-close">✕</button></div>
   <div id="file-context-menu" class="context-menu" hidden></div>
   <div id="dialog-overlay" class="dialog-overlay" hidden>
     <div class="dialog"><p id="dialog-message"></p><div id="dialog-buttons" class="dialog-buttons"></div></div>
@@ -53,7 +59,6 @@
   <pre id="results" style="position:fixed;left:-99999px"></pre>
 
   <script src="../vendor/marked.min.js"></script>
-  <script src="../vendor/jszip.min.js"></script>
   <script>
   (async () => {
     const out = []; let passed = 0, failed = 0;
@@ -268,7 +273,7 @@
     step('собираем ZIP');
     capturedBlob = null;
     el('download-zip-button').click();
-    for (let i = 0; i < 40 && !capturedBlob; i++) await sleep(50);
+    for (let i = 0; i < 120 && !capturedBlob; i++) await sleep(50); // упаковщик грузится лениво
     check('ZIP собран', Boolean(capturedBlob));
     if (capturedBlob) {
       const zip = await window.JSZip.loadAsync(capturedBlob);

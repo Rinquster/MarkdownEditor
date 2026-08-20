@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>MDEditor — тема, печать, мобильный режим, доступность</title>
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+  <header class="app-header">
+    <button type="button" id="sidebar-toggle" class="sidebar-toggle" aria-expanded="false">≡</button>
+    <div class="brand"><span class="brand-mark">MD</span><h1>MD</h1></div>
+    <div class="segmented">
+      <button type="button" id="mode-preview-button">Просмотр</button>
+      <button type="button" id="mode-split-button">Вместе</button>
+      <button type="button" id="mode-editor-button">Редактор</button>
+    </div>
+    <div class="doc-bar">
+      <span id="doc-path" class="doc-path"></span>
+      <span id="doc-save" class="doc-save"></span>
+      <span id="doc-stats" class="doc-stats"></span>
+    </div>
+    <div class="header-settings">
+      <select id="preview-font-select"><option value="Lato">Lato</option><option value="Inter">Inter</option><option value="Roboto">Roboto</option><option value="Liberation Sans">Liberation Sans</option><option value="Liberation Serif">Liberation Serif</option></select>
+      <button type="button" id="preview-size-dec">−</button><span id="preview-size-value">17</span>
+      <button type="button" id="preview-size-inc">+</button>
+      <button type="button" id="editor-size-dec">−</button><span id="editor-size-value">14</span>
+      <button type="button" id="editor-size-inc">+</button>
+      <button type="button" id="theme-button" class="header-icon"></button>
+      <button type="button" id="toc-button"><span>Оглавление</span></button>
+      <button type="button" id="copy-doc-button"><span>Текст</span></button>
+      <button type="button" id="download-zip-button"><span>ZIP</span></button>
+    </div>
+  </header>
+
+  <div id="sidebar-backdrop" class="sidebar-backdrop" hidden></div>
+
+  <div class="layout">
+    <aside class="sidebar" id="sidebar">
+      <div class="pane-title"><span>Файлы</span>
+        <div class="pane-actions">
+          <button type="button" id="new-file-button">+</button>
+          <button type="button" id="new-folder-button">D+</button>
+          <button type="button" id="delete-all-button">X</button>
+          <button type="button" id="upload-button">↑</button>
+        </div>
+      </div>
+      <div class="file-search"><input id="file-search-input" type="search"></div>
+      <div id="file-list" class="file-list"></div>
+      <div class="sidebar-footer"><span id="status-line">…</span></div>
+    </aside>
+    <div id="sidebar-resizer" class="sidebar-resizer" tabindex="0" role="separator"
+         aria-orientation="vertical" aria-label="Ширина панели файлов"
+         aria-valuemin="210" aria-valuemax="520" aria-valuenow="280"></div>
+    <main class="content" id="content">
+      <div id="editor-pane" class="editor-pane" hidden>
+        <div id="editor-toolbar" class="editor-toolbar" role="toolbar"></div>
+        <div class="editor-surface">
+          <pre id="editor-highlight" class="editor-highlight" aria-hidden="true"></pre>
+          <textarea id="editor"></textarea>
+        </div>
+      </div>
+      <div id="split-resizer" class="split-resizer" hidden></div>
+      <div id="preview-pane" class="preview-pane"><div id="preview-body" class="markdown-body"></div></div>
+      <aside id="toc-panel" class="toc-panel" hidden>
+        <div class="toc-title">Оглавление</div><nav id="toc-list" class="toc-list"></nav>
+      </aside>
+      <div id="welcome-pane" class="welcome-pane" hidden><div class="welcome-card"></div></div>
+    </main>
+  </div>
+
+  <div id="find-bar" class="find-bar" hidden>
+    <input id="find-input" type="search">
+    <span id="find-count" class="find-count"></span>
+    <button type="button" id="find-prev">↑</button>
+    <button type="button" id="find-next">↓</button>
+    <button type="button" id="find-close">✕</button>
+  </div>
+  <div id="file-context-menu" class="context-menu" hidden></div>
+  <div id="dialog-overlay" class="dialog-overlay" hidden>
+    <div class="dialog" role="dialog" aria-modal="true">
+      <p id="dialog-message"></p><div id="dialog-buttons" class="dialog-buttons"></div>
+    </div>
+  </div>
+  <input id="upload-input" type="file" multiple hidden>
+  <pre id="results" style="position:fixed;left:-99999px"></pre>
+  <div id="host" style="position:fixed;left:-99999px;top:0"></div>
+
+  <script src="../vendor/marked.min.js"></script>
+  <script>
+  (async () => {
+    const out = []; let passed = 0, failed = 0;
+    const flush = () => { document.getElementById('results').textContent = out.join('\n'); };
+    const check = (name, ok, detail) => {
+      ok ? passed++ : failed++;
+      out.push((ok ? 'PASS  ' : 'FAIL  ') + name + (ok || !detail ? '' : '\n        → ' + detail));
+      flush();
+    };
+    const step = (label) => { out.push('.. ' + label); flush(); };
+    const el = (id) => document.getElementById(id);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    window.addEventListener('error', (e) => { out.push('ОШИБКА: ' + e.message); flush(); });
+
+    await new Promise((resolve) => {
+      const request = indexedDB.deleteDatabase('mdeditor');
+      request.onsuccess = request.onerror = request.onblocked = () => resolve();
+    });
+    try {
+      localStorage.removeItem('mdeditor-emergency');
+      localStorage.removeItem('mdeditor-settings');
+    } catch {}
+
+    // ловим выгружаемые файлы и подменяем печать
+    let capturedBlob = null;
+    let capturedName = null;
+    const realCreateUrl = URL.createObjectURL.bind(URL);
+    URL.createObjectURL = (blob) => { capturedBlob = blob; return realCreateUrl(blob); };
+    const realClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function patched() {
+      if (this.download) { capturedName = this.download; return; }
+      return realClick.call(this);
+    };
+    let printCalls = 0;
+    window.print = () => { printCalls += 1; };
+
+    check('JSZip не загружается при старте', typeof window.JSZip === 'undefined',
+      'typeof = ' + typeof window.JSZip);
+
+    await new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = '../js/app.js';
+      script.onload = resolve; script.onerror = reject;
+      document.body.appendChild(script);
+    });
+    for (let i = 0; i < 80 && el('file-list').children.length === 0; i++) await sleep(50);
+
+    const rows = () => Array.from(document.querySelectorAll('#file-list .file-row'));
+    const rowByName = (name) => rows().find((r) => {
+      const n = r.querySelector('.file-name');
+      return n && n.textContent === name;
+    });
+    async function menuAction(row, label) {
+      row.querySelector('.file-menu-button').click();
+      await sleep(60);
+      const button = Array.from(document.querySelectorAll('#file-context-menu button'))
+        .find((b) => b.textContent === label);
+      if (!button) return false;
+      button.click();
+      await sleep(200);
+      return true;
+    }
+
+    // ================= 7.1 тема =================
+    step('тема');
+    const root = document.documentElement;
+    check('на корне выставлена разрешённая тема',
+      root.dataset.theme === 'dark' || root.dataset.theme === 'light', root.dataset.theme);
+    const themeButton = el('theme-button');
+    check('кнопка темы подписана', Boolean(themeButton.getAttribute('aria-label')),
+      themeButton.getAttribute('aria-label'));
+
+    const startTheme = root.dataset.theme;
+    themeButton.click(); await sleep(120);
+    check('первое нажатие включает светлую тему', root.dataset.theme === 'light',
+      root.dataset.theme);
+    const lightBg = getComputedStyle(document.body).backgroundColor;
+    check('фон действительно светлый',
+      /^rgb\(2[45][0-9], 2[45][0-9], 2[45][0-9]\)$/.test(lightBg) || lightBg === 'rgb(255, 255, 255)',
+      lightBg);
+    check('color-scheme переключился', getComputedStyle(root).colorScheme === 'light',
+      getComputedStyle(root).colorScheme);
+
+    themeButton.click(); await sleep(120);
+    check('второе нажатие включает тёмную тему', root.dataset.theme === 'dark', root.dataset.theme);
+    const darkBg = getComputedStyle(document.body).backgroundColor;
+    check('фон действительно тёмный', darkBg !== lightBg, darkBg);
+
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem('mdeditor-settings')); } catch {}
+    check('выбор темы сохранён', saved && saved.theme === 'dark', JSON.stringify(saved && saved.theme));
+
+    themeButton.click(); await sleep(120);
+    check('третье нажатие возвращает «как в системе»',
+      root.dataset.theme === startTheme, root.dataset.theme);
+
+    // ================= 7.5 сведения о документе =================
+    step('сведения о документе');
+    check('показан путь открытого файла', el('doc-path').textContent.length > 0,
+      el('doc-path').textContent);
+    check('показано состояние сохранения', el('doc-save').textContent.length > 0,
+      el('doc-save').textContent);
+    check('показан счётчик слов', /слов|слово|слова/.test(el('doc-stats').textContent),
+      el('doc-stats').textContent);
+    check('показано время чтения', /мин чтения/.test(el('doc-stats').textContent),
+      el('doc-stats').textContent);
+
+    el('mode-editor-button').click();
+    await sleep(150);
+    const editor = el('editor');
+    editor.value = 'один два три четыре пять';
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    await sleep(60);
+    check('после правки состояние — «есть несохранённые»',
+      el('doc-save').classList.contains('dirty'), el('doc-save').textContent);
+    check('счётчик слов пересчитался', /^5 слов/.test(el('doc-stats').textContent),
+      el('doc-stats').textContent);
+    await sleep(900);
+    check('после записи состояние — «сохранено»',
+      !el('doc-save').classList.contains('dirty'), el('doc-save').textContent);
+
+    // ================= 7.2 экспорт в HTML =================
+    step('экспорт в HTML');
+    editor.value = [
+      '# Отчёт', '', 'Текст со **словом**.', '',
+      '```js', 'const x = 1; // комментарий', '```', '',
+      '<img src=x onerror="window.__pwned = 1">',
+    ].join('\n');
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    await sleep(300);
+
+    capturedBlob = null; capturedName = null;
+    const fileRow = rowByName('добро-пожаловать.md');
+    const ok = await menuAction(fileRow, 'Выгрузить в HTML');
+    check('в меню файла есть выгрузка в HTML', ok);
+    check('файл предложен к скачиванию', Boolean(capturedBlob) && /\.html$/.test(capturedName || ''),
+      String(capturedName));
+
+    const html = capturedBlob ? await capturedBlob.text() : '';
+    check('выгрузка — самодостаточная страница',
+      /^<!DOCTYPE html>/.test(html) && html.includes('<style>') && html.includes('</html>'),
+      html.slice(0, 60));
+    check('содержимое документа на месте',
+      html.includes('<h1>Отчёт</h1>') && html.includes('<strong>словом</strong>'),
+      html.slice(html.indexOf('<main>'), html.indexOf('<main>') + 200));
+    check('подсветка кода вшита стилями, а не классами',
+      html.includes('style="color:') && !html.includes('class="tok-'),
+      html.includes('style="color:') ? 'инлайн есть' : 'инлайна нет');
+    check('опасная разметка вычищена и из выгрузки',
+      !/onerror/i.test(html), html.slice(html.indexOf('img') - 40, html.indexOf('img') + 60));
+    check('обработчик не сработал', window.__pwned === undefined);
+
+    // ================= 7.2 печать =================
+    step('печать');
+    printCalls = 0;
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', ctrlKey: true, bubbles: true, cancelable: true }));
+    await sleep(200);
+    check('Ctrl+P вызывает печать', printCalls === 1, 'вызовов: ' + printCalls);
+    check('перед печатью превью отрисовано даже из режима редактора',
+      /Отчёт/.test(el('preview-body').textContent), el('preview-body').textContent.slice(0, 40));
+
+    // ================= 7.6 ленивая загрузка упаковщика =================
+    step('упаковщик архива');
+    // без единого файла кнопка ZIP выходит раньше, чем дойдёт до упаковщика
+    el('new-file-button').click();
+    await sleep(80);
+    const zipNameInput = document.querySelector('.file-name-input');
+    if (zipNameInput) {
+      zipNameInput.value = 'для-архива.md';
+      zipNameInput.dispatchEvent(new Event('input', { bubbles: true }));
+      zipNameInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      await sleep(150);
+    }
+    check('до нажатия ZIP упаковщик всё ещё не загружен', typeof window.JSZip === 'undefined',
+      'typeof = ' + typeof window.JSZip);
+    capturedBlob = null;
+    el('download-zip-button').click();
+    for (let i = 0; i < 100 && typeof window.JSZip === 'undefined'; i++) await sleep(50);
+    check('после нажатия упаковщик подгрузился', typeof window.JSZip !== 'undefined',
+      'typeof = ' + typeof window.JSZip);
+
+    // ================= 7.4 доступность =================
+    step('доступность: дерево файлов');
+    check('у списка роль дерева', el('file-list').getAttribute('role') === 'tree');
+    const anyRow = rows()[0];
+    check('у строк роль элемента дерева', anyRow.getAttribute('role') === 'treeitem');
+    check('уровень вложенности размечен', Boolean(anyRow.getAttribute('aria-level')));
+
+    step('доступность: резайзер панели');
+    const resizer = el('sidebar-resizer');
+    check('резайзер получает фокус', resizer.tabIndex >= 0, 'tabindex ' + resizer.tabIndex);
+    check('у резайзера роль разделителя', resizer.getAttribute('role') === 'separator');
+    const widthBefore = parseInt(getComputedStyle(document.documentElement)
+      .getPropertyValue('--sidebar-width'), 10);
+    resizer.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+    await sleep(80);
+    const widthAfter = parseInt(getComputedStyle(document.documentElement)
+      .getPropertyValue('--sidebar-width'), 10);
+    check('стрелка меняет ширину панели', widthAfter === widthBefore + 10,
+      'было ' + widthBefore + ', стало ' + widthAfter);
+    check('значение отражено для чтения с экрана',
+      resizer.getAttribute('aria-valuenow') === String(widthAfter),
+      resizer.getAttribute('aria-valuenow'));
+
+    step('доступность: контекстное меню');
+    rows()[0].querySelector('.file-menu-button').focus();
+    rows()[0].querySelector('.file-menu-button').click();
+    await sleep(120);
+    const menuItems = Array.from(document.querySelectorAll('#file-context-menu button'));
+    check('у пунктов меню роль menuitem',
+      menuItems.every((b) => b.getAttribute('role') === 'menuitem'));
+    check('фокус ушёл в меню', menuItems.includes(document.activeElement),
+      document.activeElement.textContent);
+    el('file-context-menu').dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+    await sleep(80);
+    check('стрелка вниз двигает по пунктам меню', document.activeElement === menuItems[1],
+      document.activeElement.textContent);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await sleep(120);
+    check('Escape закрыл меню', el('file-context-menu').hidden);
+
+    step('доступность: диалог');
+    // файл для диалога уже заведён выше, в разделе про упаковщик
+    const opener = el('delete-all-button');
+    opener.focus();
+    opener.click();
+    await sleep(150);
+    const dialogButtons = Array.from(document.querySelectorAll('#dialog-buttons button'));
+    check('диалог открыт и в нём есть кнопки', dialogButtons.length >= 2);
+    check('фокус внутри диалога', dialogButtons.includes(document.activeElement),
+      document.activeElement.textContent);
+
+    if (dialogButtons.length === 0) {
+      check('диалог не открылся — дальнейшие проверки фокуса пропущены', false);
+    } else {
+    dialogButtons[dialogButtons.length - 1].focus();
+    document.dispatchEvent(new KeyboardEvent('keydown',
+      { key: 'Tab', bubbles: true, cancelable: true }));
+    await sleep(80);
+    check('Tab с последней кнопки возвращает на первую (фокус заперт)',
+      document.activeElement === dialogButtons[0], document.activeElement.textContent);
+
+    dialogButtons[0].focus();
+    document.dispatchEvent(new KeyboardEvent('keydown',
+      { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true }));
+    await sleep(80);
+    check('Shift+Tab с первой кнопки уводит на последнюю',
+      document.activeElement === dialogButtons[dialogButtons.length - 1],
+      document.activeElement.textContent);
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await sleep(150);
+    check('после закрытия фокус вернулся к вызвавшей кнопке',
+      document.activeElement === opener,
+      document.activeElement ? document.activeElement.id || document.activeElement.tagName : 'нет');
+    }
+
+    // ================= 7.3 мобильный режим =================
+    step('мобильный режим (узкий фрейм)');
+    const frame = document.createElement('iframe');
+    frame.style.cssText = 'width:420px;height:640px;border:0';
+    frame.src = '_app-frame.html';
+    el('host').appendChild(frame);
+    await new Promise((resolve) => { frame.onload = resolve; });
+    const doc = frame.contentDocument;
+    for (let i = 0; i < 80 && doc.getElementById('file-list').children.length === 0; i++) await sleep(50);
+    await sleep(300);
+
+    const frameWin = frame.contentWindow;
+    const frameSidebar = doc.getElementById('sidebar');
+    check('на узком экране панель файлов выведена из потока',
+      frameWin.getComputedStyle(frameSidebar).position === 'fixed',
+      frameWin.getComputedStyle(frameSidebar).position);
+    check('панель убрана за левый край',
+      frameSidebar.getBoundingClientRect().right <= 1,
+      'right = ' + Math.round(frameSidebar.getBoundingClientRect().right));
+    check('появилась кнопка вызова панели',
+      frameWin.getComputedStyle(doc.getElementById('sidebar-toggle')).display !== 'none',
+      frameWin.getComputedStyle(doc.getElementById('sidebar-toggle')).display);
+
+    doc.getElementById('sidebar-toggle').click();
+    await sleep(400);
+    check('кнопка выдвигает панель',
+      frameSidebar.getBoundingClientRect().right > 100,
+      'right = ' + Math.round(frameSidebar.getBoundingClientRect().right));
+    check('появилась подложка', !doc.getElementById('sidebar-backdrop').hidden);
+    check('состояние отражено для чтения с экрана',
+      doc.getElementById('sidebar-toggle').getAttribute('aria-expanded') === 'true');
+
+    doc.getElementById('sidebar-backdrop').click();
+    await sleep(400);
+    check('клик по подложке убирает панель',
+      frameSidebar.getBoundingClientRect().right <= 1,
+      'right = ' + Math.round(frameSidebar.getBoundingClientRect().right));
+
+    frame.remove();
+
+    out.push('');
+    out.push('ИТОГО: ' + passed + ' пройдено, ' + failed + ' провалено');
+    flush();
+    document.title = failed === 0 ? 'ALL-PASS' : 'FAILURES-' + failed;
+  })().catch((error) => {
+    document.getElementById('results').textContent += '\nИСКЛЮЧЕНИЕ: ' + (error && error.stack || error);
+    document.title = 'FAILURES-CRASH';
+  });
+  </script>
+</body>
+</html>

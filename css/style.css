@@ -13,15 +13,6 @@
 @font-face { font-family: 'Roboto'; font-style: italic; font-weight: 400; font-display: swap; src: url('../fonts/Roboto-Italic.woff2') format('woff2'); }
 @font-face { font-family: 'Roboto'; font-style: italic; font-weight: 700; font-display: swap; src: url('../fonts/Roboto-BoldItalic.woff2') format('woff2'); }
 
-@font-face { font-family: 'Whitney'; font-style: normal; font-weight: 400; font-display: swap; src: url('../fonts/Whitney-Regular.woff2') format('woff2'); }
-@font-face { font-family: 'Whitney'; font-style: normal; font-weight: 700; font-display: swap; src: url('../fonts/Whitney-Bold.woff2') format('woff2'); }
-@font-face { font-family: 'Whitney'; font-style: italic; font-weight: 400; font-display: swap; src: url('../fonts/Whitney-Italic.woff2') format('woff2'); }
-@font-face { font-family: 'Whitney'; font-style: italic; font-weight: 700; font-display: swap; src: url('../fonts/Whitney-BoldItalic.woff2') format('woff2'); }
-
-@font-face { font-family: 'Antiqua'; font-style: normal; font-weight: 400; font-display: swap; src: url('../fonts/Antiqua-Regular.woff2') format('woff2'); }
-@font-face { font-family: 'Antiqua'; font-style: normal; font-weight: 700; font-display: swap; src: url('../fonts/Antiqua-Bold.woff2') format('woff2'); }
-@font-face { font-family: 'Antiqua'; font-style: italic; font-weight: 400; font-display: swap; src: url('../fonts/Antiqua-Italic.woff2') format('woff2'); }
-@font-face { font-family: 'Antiqua'; font-style: italic; font-weight: 700; font-display: swap; src: url('../fonts/Antiqua-BoldItalic.woff2') format('woff2'); }
 
 @font-face { font-family: 'Liberation Sans'; font-style: normal; font-weight: 400; font-display: swap; src: url('../fonts/LiberationSans-Regular.woff2') format('woff2'); }
 @font-face { font-family: 'Liberation Sans'; font-style: normal; font-weight: 700; font-display: swap; src: url('../fonts/LiberationSans-Bold.woff2') format('woff2'); }
@@ -40,6 +31,9 @@
 
 /* ============ Tokens ============ */
 
+/* Тёмные значения — база; светлые переопределяются ниже по data-theme.
+   Значение «как в системе» скрипт разрешает сам и кладёт на корень готовым,
+   поэтому набор переопределений здесь ровно один. */
 :root {
   color-scheme: dark;
 
@@ -60,7 +54,12 @@
   --color-danger: #be3232;
   --color-warning-text: #f3c77e;
 
-  --font-ui: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  /* Системный стек: Inter весит 349 КБ и грузился на каждом открытии ради
+     интерфейса. Как гарнитура превью он остаётся — там и подгрузится. */
+  /* Ни одного семейства, которое мы хостим сами: имя в стеке подхватило бы
+     наш @font-face и скачало файл вместо системного шрифта. Так на Linux
+     подтягивался Roboto-Bold — 62 КБ на ровном месте. */
+  --font-ui: system-ui, -apple-system, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
   --font-mono: 'Source Code Pro', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
 
   --radius-sm: 4px;
@@ -69,12 +68,48 @@
   --radius-xl: 10px;
 
   --sidebar-width: 280px;
+  --split-percent: 50;
   --shadow-overlay: 0 24px 70px rgb(0 0 0 / 45%);
 
   /* управляются из настроек в шапке */
   --preview-font: 'Lato', 'Segoe UI', system-ui, sans-serif;
   --preview-size: 17px;
   --editor-size: 14px;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --color-bg-canvas: #ffffff;
+  --color-bg-surface: #f5f7fa;
+  --color-bg-elevated: #ffffff;
+  --color-bg-hover: #eaeef4;
+  --color-border: #dde3ec;
+  --color-border-strong: #bcc6d4;
+  --color-text-primary: #10161f;
+  --color-text-secondary: #333d4b;
+  --color-text-muted: #66717f;
+  --color-accent: #1f6fd0;
+  --color-accent-hover: #185ab0;
+  --color-accent-text: #175bb5;
+  --color-accent-border: #9cc0e8;
+  --color-accent-subtle: #e7f0fb;
+  --color-danger: #c0392b;
+  --color-warning-text: #8a5a00;
+
+  --shadow-overlay: 0 20px 50px rgb(15 23 42 / 18%);
+
+  --tok-comment: #6a737d;
+  --tok-string: #1a7f37;
+  --tok-number: #a4501a;
+  --tok-keyword: #1f5fd0;
+  --tok-builtin: #0f7c8a;
+  --tok-function: #7b3fbf;
+  --tok-tag: #b03028;
+  --tok-attr: #a4501a;
+  --tok-property: #175bb5;
+  --tok-variable: #955122;
+  --tok-operator: #4b5563;
 }
 
 /* ============ Base ============ */
@@ -195,6 +230,50 @@ button {
   background: var(--color-bg-elevated);
   border-color: var(--color-border-strong);
 }
+
+/* сведения о документе занимают свободное место между режимами и настройками */
+.doc-bar {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 0 8px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.doc-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+}
+
+.doc-save { flex: 0 0 auto; }
+
+.doc-save.dirty { color: var(--color-warning-text); }
+
+.doc-stats {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.header-icon {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: color 160ms ease, background-color 160ms ease;
+}
+
+.header-icon:hover { color: var(--color-text-primary); background: var(--color-bg-hover); }
 
 .header-settings {
   display: flex;
@@ -382,6 +461,50 @@ body.resizing {
   color: var(--color-text-primary);
   background: var(--color-bg-hover);
   border-color: var(--color-border-strong);
+}
+
+.file-search {
+  flex: 0 0 auto;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+#file-search-input {
+  width: 100%;
+  min-height: 28px;
+  padding: 0 8px;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--color-text-primary);
+  background: var(--color-bg-canvas);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+#file-search-input:focus {
+  outline: none;
+  border-color: var(--color-accent-border);
+}
+
+#file-search-input::placeholder { color: var(--color-text-muted); }
+
+.search-summary {
+  padding: 6px 10px 8px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+/* сколько раз запрос встретился в тексте файла */
+.file-hits {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 0 6px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-accent-text);
+  background: var(--color-accent-subtle);
+  border: 1px solid var(--color-accent-border);
+  border-radius: 999px;
 }
 
 .file-list {
@@ -614,16 +737,20 @@ body.resizing {
 
 /* ============ Content ============ */
 
+/* Колонки в строку постоянно: оглавление — правая колонка при любом режиме,
+   а не блок под превью. В режимах «Просмотр» и «Редактор» лишние панели скрыты,
+   поэтому видимая колонка всё равно одна. */
 .content {
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   background: var(--color-bg-canvas);
 }
 
 .preview-pane {
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
   overflow-y: auto;
   padding: 32px clamp(16px, 4vw, 48px) 96px;
@@ -631,26 +758,353 @@ body.resizing {
 
 .editor-pane {
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
   display: flex;
+  flex-direction: column;
 }
 
-#editor {
+/* ---- оглавление ---- */
+
+.toc-panel {
+  flex: 0 0 230px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-bg-surface) 55%, transparent);
+}
+
+.toc-title {
+  flex: 0 0 auto;
+  padding: 12px 14px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.toc-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 6px 16px;
+}
+
+.toc-link {
+  display: block;
+  padding: 5px 8px;
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toc-link:hover { color: var(--color-text-primary); background: var(--color-bg-hover); }
+
+.toc-empty { margin: 0; padding: 4px 8px; font-size: 12px; color: var(--color-text-muted); }
+
+/* ссылка-якорь появляется у заголовка при наведении */
+.heading-anchor {
+  margin-left: 0.4em;
+  font-weight: 400;
+  color: var(--color-text-muted);
+  text-decoration: none;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.markdown-body h1:hover .heading-anchor,
+.markdown-body h2:hover .heading-anchor,
+.markdown-body h3:hover .heading-anchor,
+.markdown-body h4:hover .heading-anchor,
+.markdown-body h5:hover .heading-anchor,
+.markdown-body h6:hover .heading-anchor,
+.heading-anchor:focus-visible { opacity: 1; }
+
+/* ---- поиск внутри документа ---- */
+
+.find-bar {
+  position: fixed;
+  top: calc(61px + 10px);
+  right: 22px;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-overlay);
+}
+
+#find-input {
+  width: 200px;
+  min-height: 28px;
+  padding: 0 8px;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--color-text-primary);
+  background: var(--color-bg-canvas);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+#find-input:focus { outline: none; border-color: var(--color-accent-border); }
+
+.find-count {
+  min-width: 74px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+.find-bar button {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.find-bar button:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+  border-color: var(--color-border-strong);
+}
+
+/* при открытом оглавлении сдвигаем строку поиска, иначе она накрывает его первый пункт */
+body.toc-open .find-bar { right: calc(230px + 22px); }
+
+mark.find-hit {
+  color: inherit;
+  background: color-mix(in srgb, var(--color-warning-text) 45%, transparent);
+  border-radius: 2px;
+}
+
+mark.find-hit.current {
+  background: var(--color-warning-text);
+  color: #1a1205;
+}
+
+/* ---- панель форматирования ---- */
+
+.editor-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 38px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-bg-surface) 55%, transparent);
+}
+
+.editor-toolbar.collapsed {
+  min-height: 0;
+  padding: 0 8px;
+  border-bottom-color: transparent;
+  justify-content: flex-end;
+}
+
+.toolbar-button {
+  min-width: 30px;
+  height: 28px;
+  padding: 0 7px;
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: color 160ms ease, background-color 160ms ease, border-color 160ms ease;
+}
+
+.toolbar-button:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+  border-color: var(--color-border-strong);
+}
+
+.toolbar-button.active {
+  color: var(--color-accent-text);
+  background: var(--color-accent-subtle);
+  border-color: var(--color-accent-border);
+}
+
+.toolbar-button.bold { font-weight: 700; }
+.toolbar-button.italic { font-style: italic; font-weight: 700; }
+.toolbar-button.mono { font-family: var(--font-mono); font-size: 12px; }
+
+.toolbar-separator {
+  width: 1px;
+  height: 18px;
+  margin: 0 5px;
+  background: var(--color-border);
+}
+
+.toolbar-toggle {
+  margin-left: auto;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  color: var(--color-text-muted);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transform: rotate(-90deg);
+  transition: color 160ms ease, background-color 160ms ease;
+}
+
+.editor-toolbar.collapsed .toolbar-toggle { transform: rotate(90deg); }
+
+.toolbar-toggle:hover { color: var(--color-text-primary); background: var(--color-bg-hover); }
+
+/* ---- режим «Вместе»: редактор слева, превью справа ---- */
+
+body.mode-split .editor-pane {
+  flex: 0 0 calc((100% - 7px) * var(--split-percent) / 100);
+  min-width: 0;
+}
+
+body.mode-split .preview-pane {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+body.mode-split .preview-pane { padding-left: clamp(16px, 2vw, 32px); }
+
+.split-resizer {
+  flex: 0 0 7px;
+  cursor: col-resize;
+  background: transparent;
+  border-left: 1px solid var(--color-border);
+  transition: border-color 160ms ease, background-color 160ms ease;
+  touch-action: none;
+}
+
+.split-resizer:hover,
+body.resizing .split-resizer {
+  border-left-color: var(--color-accent-border);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+/* Копия редактора для измерений: textarea не сообщает, где начинается строка
+   после мягкого переноса, а синхронной прокрутке это нужно знать. */
+.editor-mirror {
+  position: absolute;
+  top: 0;
+  left: -99999px;
+  visibility: hidden;
+  pointer-events: none;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.editor-surface {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Слой подсветки лежит под полем ввода, и они обязаны совпадать по метрике
+   до пикселя — иначе краска «съедет» относительно букв. Поэтому все
+   типографские свойства заданы здесь один раз сразу для обоих. */
+#editor,
+.editor-highlight {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  right: 0;
+  margin: 0;
   padding: 24px clamp(16px, 3vw, 40px) 96px;
   font-family: var(--font-mono);
   font-size: var(--editor-size);
+  font-weight: 400;
+  font-style: normal;
   line-height: 1.7;
+  letter-spacing: normal;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: normal;
+  text-align: left;
+  tab-size: 2;
+  border: 0;
+}
+
+.editor-highlight {
+  /* ширину задаёт скрипт по clientWidth поля: та уже без полосы прокрутки */
+  right: auto;
+  overflow: hidden;
+  pointer-events: none;
   color: var(--color-text-secondary);
   background: var(--color-bg-canvas);
-  border: 0;
-  outline: none;
+}
+
+#editor {
+  overflow-y: auto;
   resize: none;
+  outline: none;
+  background: transparent;
+  color: var(--color-text-secondary);
   tab-size: 2;
 }
 
-#editor::placeholder { color: var(--color-text-muted); opacity: 0.6; }
+/* при включённой подсветке текст поля прозрачен: видно нижний слой и каретку */
+.editor-pane.highlight-on #editor {
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  caret-color: var(--color-text-primary);
+}
+
+.editor-pane:not(.highlight-on) .editor-highlight { display: none; }
+
+/* фон выделения полупрозрачный, иначе он закрыл бы подсвеченный текст под собой */
+#editor::selection { background: color-mix(in srgb, var(--color-accent) 42%, transparent); }
+
+#editor::placeholder {
+  color: var(--color-text-muted);
+  -webkit-text-fill-color: var(--color-text-muted);
+  opacity: 0.6;
+}
+
+/* ---- цвета разметки в редакторе ---- */
+
+.md-marker { color: var(--color-accent-text); opacity: 0.85; }
+.md-heading { color: var(--color-text-primary); font-weight: 700; }
+.md-quote { color: var(--tok-comment); font-style: italic; }
+.md-rule { color: var(--color-border-strong); }
+.md-fence { color: var(--color-accent-text); opacity: 0.8; }
+.md-code-line { color: var(--tok-string); }
+.md-code { color: var(--tok-string); }
+.md-strong { color: var(--color-text-primary); font-weight: 700; }
+.md-em { color: var(--color-text-primary); font-style: italic; }
+.md-del { color: var(--color-text-muted); text-decoration: line-through; }
+.md-link { color: var(--tok-keyword); }
+.md-image { color: var(--tok-function); }
+.md-autolink { color: var(--tok-keyword); }
+.md-url { color: var(--tok-keyword); opacity: 0.85; }
+.md-task { color: var(--tok-number); }
+.md-table { color: var(--tok-property); }
+.md-html { color: var(--tok-tag); }
 
 .welcome-pane {
   flex: 1 1 auto;
@@ -876,6 +1330,35 @@ body.resizing {
   font-size: 0.86em;
 }
 
+/* ---- подсветка кода ---- */
+/* значения на тёмной теме; светлые лежат рядом с остальными токенами выше */
+
+:root {
+  --tok-comment: #6b7c93;
+  --tok-string: #9ece8a;
+  --tok-number: #e6a86c;
+  --tok-keyword: #7aa6f0;
+  --tok-builtin: #5ec4d0;
+  --tok-function: #c3a6ff;
+  --tok-tag: #e0707c;
+  --tok-attr: #e6a86c;
+  --tok-property: #8fc4ff;
+  --tok-variable: #d9a06a;
+  --tok-operator: #97a5b8;
+}
+
+.tok-comment { color: var(--tok-comment); font-style: italic; }
+.tok-string { color: var(--tok-string); }
+.tok-number { color: var(--tok-number); }
+.tok-keyword { color: var(--tok-keyword); }
+.tok-builtin { color: var(--tok-builtin); }
+.tok-function { color: var(--tok-function); }
+.tok-tag { color: var(--tok-tag); }
+.tok-attr { color: var(--tok-attr); }
+.tok-property { color: var(--tok-property); }
+.tok-variable { color: var(--tok-variable); }
+.tok-operator { color: var(--tok-operator); }
+
 /* блок кода в обёртке: кнопка копирования не должна уезжать вместе
    с горизонтальной прокруткой самого <pre>, поэтому позиционируется от обёртки */
 .code-block {
@@ -962,10 +1445,142 @@ body.resizing {
 
 .markdown-body strong { color: var(--color-text-primary); }
 
-/* ============ Narrow screens ============ */
+/* ============ Кнопка панели и подложка ============ */
+
+.sidebar-toggle {
+  display: none;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.sidebar-toggle:hover { color: var(--color-text-primary); background: var(--color-bg-hover); }
+
+.sidebar-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgb(0 0 0 / 45%);
+}
+
+/* ============ Узкие экраны ============ */
+
+@media (max-width: 900px) {
+  .setting-label { display: none; }
+  .doc-stats { display: none; }
+}
 
 @media (max-width: 760px) {
-  :root { --sidebar-width: 220px; }
   .brand h1 { display: none; }
-  .setting-label { display: none; }
+  .sidebar-toggle { display: grid; }
+  .doc-bar { order: 10; flex-basis: 100%; padding: 0; }
+  .header-action span { display: none; }
+  .header-action { padding: 0 10px; }
+
+  /* Панель файлов становится выдвижной: на узком экране ей негде стоять рядом,
+     а ужимать её до нечитаемой ширины — не выход. */
+  .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 50;
+    width: min(320px, 86vw);
+    flex-basis: auto;
+    transform: translateX(-100%);
+    transition: transform 200ms ease;
+    box-shadow: var(--shadow-overlay);
+  }
+
+  body.sidebar-open .sidebar { transform: translateX(0); }
+
+  .sidebar-resizer { display: none; }
+
+  /* режим «Вместе» на узком экране не помещается — показываем одну панель */
+  body.mode-split .editor-pane { flex: 1 1 auto; }
+  body.mode-split .preview-pane { display: none; }
+  body.mode-split .split-resizer { display: none; }
+
+  .toc-panel { flex-basis: 180px; }
+  .find-bar, body.toc-open .find-bar { right: 12px; left: 12px; }
+  #find-input { width: auto; flex: 1 1 auto; min-width: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar { transition: none; }
+}
+
+/* ============ Печать ============ */
+
+/* Печатается только текст документа: интерфейс на бумаге не нужен,
+   а тёмный фон — тем более. */
+@media print {
+  html, body {
+    height: auto;
+    overflow: visible;
+    background: #ffffff;
+    color: #000000;
+  }
+
+  .app-header,
+  .sidebar,
+  .sidebar-resizer,
+  .sidebar-backdrop,
+  .split-resizer,
+  .editor-pane,
+  .editor-toolbar,
+  .toc-panel,
+  .find-bar,
+  .context-menu,
+  .dialog-overlay,
+  .code-copy,
+  .heading-anchor { display: none !important; }
+
+  .layout, .content { display: block; }
+
+  .preview-pane {
+    display: block !important;
+    overflow: visible;
+    padding: 0;
+  }
+
+  .markdown-body {
+    max-width: none;
+    color: #000000;
+    font-size: 12pt;
+  }
+
+  .markdown-body h1,
+  .markdown-body h2,
+  .markdown-body h3,
+  .markdown-body h4,
+  .markdown-body strong { color: #000000; }
+
+  .markdown-body a { color: #000000; text-decoration: underline; }
+
+  .markdown-body pre,
+  .markdown-body code,
+  .markdown-body th {
+    background: #f4f4f4;
+    border-color: #cccccc;
+    color: #000000;
+  }
+
+  /* блоки и таблицы не должны разрываться между страницами */
+  .markdown-body pre,
+  .markdown-body blockquote,
+  .markdown-body table,
+  .code-block { break-inside: avoid; }
+
+  .markdown-body h1,
+  .markdown-body h2,
+  .markdown-body h3 { break-after: avoid; }
+
+  /* подсветка на бумаге только мешает */
+  [class^='tok-'] { color: #000000 !important; font-style: normal !important; }
 }

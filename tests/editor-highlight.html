@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>MDEditor — подсветка разметки в редакторе</title>
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+  <header class="app-header">
+    <div class="brand"><span class="brand-mark">MD</span><h1>MD</h1></div>
+    <div class="segmented">
+      <button type="button" id="mode-preview-button">Просмотр</button>
+      <button type="button" id="mode-split-button">Вместе</button>
+      <button type="button" id="mode-editor-button">Редактор</button>
+    </div>
+    <div class="header-settings">
+      <select id="preview-font-select"><option value="Lato">Lato</option><option value="Inter">Inter</option><option value="Roboto">Roboto</option><option value="Liberation Sans">Liberation Sans</option><option value="Liberation Serif">Liberation Serif</option></select>
+      <button type="button" id="preview-size-dec">−</button><span id="preview-size-value">17</span>
+      <button type="button" id="preview-size-inc">+</button>
+      <button type="button" id="editor-size-dec">−</button><span id="editor-size-value">14</span>
+      <button type="button" id="editor-size-inc">+</button>
+      <button type="button" id="theme-button"></button><span id="doc-path"></span><span id="doc-save"></span><span id="doc-stats"></span><button type="button" id="toc-button"><span>Оглавление</span></button><button type="button" id="copy-doc-button"><span>Текст</span></button>
+      <button type="button" id="download-zip-button"><span>ZIP</span></button>
+    </div>
+  </header>
+
+  <button type="button" id="sidebar-toggle"></button>
+  <div id="sidebar-backdrop" class="sidebar-backdrop" hidden></div>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar">
+      <div class="pane-title"><span>Файлы</span>
+        <div class="pane-actions">
+          <button type="button" id="new-file-button">+</button>
+          <button type="button" id="new-folder-button">D+</button>
+          <button type="button" id="delete-all-button">X</button>
+          <button type="button" id="upload-button">↑</button>
+        </div>
+      </div>
+      <div class="file-search"><input id="file-search-input" type="search"></div>
+      <div id="file-list" class="file-list"></div>
+      <div class="sidebar-footer"><span id="status-line">…</span></div>
+    </aside>
+    <div id="sidebar-resizer" class="sidebar-resizer"></div>
+    <main class="content" id="content">
+      <div id="editor-pane" class="editor-pane" hidden>
+        <div id="editor-toolbar" class="editor-toolbar" role="toolbar"></div>
+        <div class="editor-surface">
+          <pre id="editor-highlight" class="editor-highlight" aria-hidden="true"></pre>
+          <textarea id="editor"></textarea>
+        </div>
+      </div>
+      <div id="split-resizer" class="split-resizer" hidden></div>
+      <div id="preview-pane" class="preview-pane"><div id="preview-body" class="markdown-body"></div></div>
+      <aside id="toc-panel" class="toc-panel" hidden><div class="toc-title">Оглавление</div><nav id="toc-list" class="toc-list"></nav></aside>
+      <div id="welcome-pane" class="welcome-pane" hidden><div class="welcome-card"></div></div>
+    </main>
+  </div>
+
+  <div id="find-bar" class="find-bar" hidden><input id="find-input" type="search"><span id="find-count" class="find-count"></span><button type="button" id="find-prev">↑</button><button type="button" id="find-next">↓</button><button type="button" id="find-close">✕</button></div>
+  <div id="file-context-menu" class="context-menu" hidden></div>
+  <div id="dialog-overlay" class="dialog-overlay" hidden>
+    <div class="dialog"><p id="dialog-message"></p><div id="dialog-buttons" class="dialog-buttons"></div></div>
+  </div>
+  <input id="upload-input" type="file" multiple hidden>
+  <pre id="results" style="position:fixed;left:-99999px"></pre>
+
+  <script src="../vendor/marked.min.js"></script>
+  <script>
+  (async () => {
+    const out = []; let passed = 0, failed = 0;
+    const flush = () => { document.getElementById('results').textContent = out.join('\n'); };
+    const check = (name, ok, detail) => {
+      ok ? passed++ : failed++;
+      out.push((ok ? 'PASS  ' : 'FAIL  ') + name + (ok || !detail ? '' : '\n        → ' + detail));
+      flush();
+    };
+    const note = (text) => { out.push('   ' + text); flush(); };
+    const step = (label) => { out.push('.. ' + label); flush(); };
+    const el = (id) => document.getElementById(id);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    window.addEventListener('error', (e) => { out.push('ОШИБКА: ' + e.message); flush(); });
+
+    await new Promise((resolve) => {
+      const request = indexedDB.deleteDatabase('mdeditor');
+      request.onsuccess = request.onerror = request.onblocked = () => resolve();
+    });
+    try {
+      localStorage.removeItem('mdeditor-emergency');
+      localStorage.removeItem('mdeditor-settings');
+    } catch {}
+
+    await new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = '../js/app.js';
+      script.onload = resolve; script.onerror = reject;
+      document.body.appendChild(script);
+    });
+    for (let i = 0; i < 80 && el('file-list').children.length === 0; i++) await sleep(50);
+
+    el('mode-editor-button').click();
+    await sleep(200);
+    const editor = el('editor');
+    const layer = el('editor-highlight');
+
+    const setText = async (text) => {
+      editor.value = text;
+      editor.dispatchEvent(new Event('input', { bubbles: true }));
+      await sleep(120);
+    };
+
+    // ---- документ со всеми видами разметки, включая длинную переносимую строку ----
+    const DOC = [
+      '# Заголовок первого уровня',
+      '',
+      'Обычный абзац с **жирным**, *курсивом*, `кодом` и [ссылкой](https://example.com).',
+      '',
+      'Очень длинная строка, которую редактор обязан перенести: ' + 'слово '.repeat(40),
+      '',
+      '## Подзаголовок',
+      '',
+      '- пункт списка',
+      '- [x] выполненная задача',
+      '- [ ] невыполненная',
+      '',
+      '1. первый',
+      '2. второй',
+      '',
+      '> цитата в одну строку',
+      '',
+      '| Колонка | Ещё |',
+      '| ------- | --- |',
+      '| да      | нет |',
+      '',
+      '```js',
+      'const значение = 42;',
+      '// комментарий внутри блока',
+      '```',
+      '',
+      '---',
+      '',
+      '[ссылка]: https://example.com',
+      '',
+      'Хвостовой абзац.',
+    ].join('\n');
+
+    step('вводим документ со всей разметкой');
+    await setText(DOC);
+
+    // ======= самое важное: слой обязан совпадать с полем =======
+    check('текст слоя посимвольно равен тексту поля',
+      layer.textContent === editor.value || layer.textContent === editor.value + '\n',
+      'длина слоя ' + layer.textContent.length + ', поля ' + editor.value.length
+        + '\n        первое расхождение на позиции '
+        + (() => {
+            const a = layer.textContent, b = editor.value;
+            for (let i = 0; i < Math.max(a.length, b.length); i++) {
+              if (a[i] !== b[i]) return i + ' (' + JSON.stringify(a.slice(i, i + 20))
+                + ' против ' + JSON.stringify(b.slice(i, i + 20)) + ')';
+            }
+            return 'нет';
+          })());
+
+    note('высота поля ' + editor.scrollHeight + ', высота слоя ' + layer.scrollHeight
+      + ', строка ' + getComputedStyle(editor).lineHeight);
+    const lineHeight = parseFloat(getComputedStyle(editor).lineHeight) || 20;
+    check('высота слоя совпадает с высотой поля (перенос строк одинаковый)',
+      Math.abs(layer.scrollHeight - editor.scrollHeight) < 1,
+      'разница ' + (layer.scrollHeight - editor.scrollHeight) + ' px, это '
+        + ((layer.scrollHeight - editor.scrollHeight) / lineHeight).toFixed(2) + ' строки');
+
+    check('ширина слоя равна клиентской ширине поля (без полосы прокрутки)',
+      Math.abs(layer.getBoundingClientRect().width - editor.clientWidth) < 1,
+      'слой ' + layer.getBoundingClientRect().width.toFixed(1)
+        + ', поле ' + editor.clientWidth);
+
+    check('слой и поле выровнены по левому верхнему углу',
+      Math.abs(layer.getBoundingClientRect().left - editor.getBoundingClientRect().left) < 1
+      && Math.abs(layer.getBoundingClientRect().top - editor.getBoundingClientRect().top) < 1);
+
+    // ======= разметка действительно размечена =======
+    step('проверяем виды разметки');
+    const cls = (name) => layer.querySelectorAll('.' + name).length;
+    check('заголовки выделены', cls('md-heading') === 2, 'найдено: ' + cls('md-heading'));
+    check('маркеры блоков выделены', cls('md-marker') >= 8, 'найдено: ' + cls('md-marker'));
+    check('жирный выделен', cls('md-strong') === 1, 'найдено: ' + cls('md-strong'));
+    check('курсив выделен', cls('md-em') === 1, 'найдено: ' + cls('md-em'));
+    check('строчный код выделен', cls('md-code') === 1, 'найдено: ' + cls('md-code'));
+    check('ссылка выделена', cls('md-link') === 1, 'найдено: ' + cls('md-link'));
+    check('чекбоксы задач выделены', cls('md-task') === 2, 'найдено: ' + cls('md-task'));
+    check('цитата выделена', cls('md-quote') === 1, 'найдено: ' + cls('md-quote'));
+    check('строки таблицы выделены', cls('md-table') === 3, 'найдено: ' + cls('md-table'));
+    check('ограждения блока кода выделены', cls('md-fence') === 2, 'найдено: ' + cls('md-fence'));
+    check('строки внутри блока кода выделены', cls('md-code-line') === 2,
+      'найдено: ' + cls('md-code-line'));
+    check('горизонтальная черта выделена', cls('md-rule') === 1, 'найдено: ' + cls('md-rule'));
+    check('определение ссылки выделено', cls('md-url') === 1, 'найдено: ' + cls('md-url'));
+
+    // внутри блока кода разметка markdown не должна разбираться
+    const fenceLines = Array.from(layer.querySelectorAll('.md-code-line'))
+      .map((n) => n.textContent);
+    check('содержимое блока кода не разбирается как markdown',
+      fenceLines.some((l) => l.includes('// комментарий внутри блока')),
+      JSON.stringify(fenceLines));
+
+    // ======= прокрутка =======
+    step('прокрутка');
+    editor.scrollTop = 200;
+    editor.dispatchEvent(new Event('scroll'));
+    await sleep(80);
+    check('слой прокручивается вместе с полем', Math.abs(layer.scrollTop - 200) < 2,
+      'слой на ' + layer.scrollTop);
+    editor.scrollTop = 0;
+    editor.dispatchEvent(new Event('scroll'));
+    await sleep(80);
+
+    // ======= смена кегля не должна ломать выравнивание =======
+    step('меняем кегль редактора');
+    el('editor-size-inc').click();
+    await sleep(250);
+    check('после смены кегля высоты по-прежнему совпадают',
+      Math.abs(layer.scrollHeight - editor.scrollHeight) < 1,
+      'разница ' + (layer.scrollHeight - editor.scrollHeight) + ' px');
+    el('editor-size-dec').click();
+    await sleep(250);
+
+    // ======= правка обновляет слой =======
+    step('правка обновляет слой');
+    await setText(DOC + '\n\n## Дописанный заголовок\n');
+    await sleep(120);
+    check('новый заголовок попал в слой', cls('md-heading') === 3, 'найдено: ' + cls('md-heading'));
+    check('после правки текст слоя всё ещё совпадает',
+      layer.textContent === editor.value || layer.textContent === editor.value + '\n',
+      'длина слоя ' + layer.textContent.length + ', поля ' + editor.value.length);
+    check('после правки высоты всё ещё совпадают',
+      Math.abs(layer.scrollHeight - editor.scrollHeight) < 1,
+      'разница ' + (layer.scrollHeight - editor.scrollHeight) + ' px');
+
+    // ======= выключение =======
+    step('выключаем подсветку');
+    const paint = Array.from(document.querySelectorAll('#editor-toolbar button'))
+      .find((b) => (b.getAttribute('aria-label') || '') === 'Подсветка разметки в редакторе');
+    check('кнопка подсветки есть в панели', Boolean(paint));
+    check('кнопка отмечена как включённая', paint.getAttribute('aria-pressed') === 'true');
+    paint.click();
+    await sleep(200);
+    check('слой скрыт', getComputedStyle(layer).display === 'none',
+      getComputedStyle(layer).display);
+    check('текст поля снова видимый',
+      getComputedStyle(editor).webkitTextFillColor !== 'rgba(0, 0, 0, 0)'
+      && getComputedStyle(editor).color !== 'rgba(0, 0, 0, 0)',
+      'color ' + getComputedStyle(editor).color
+        + ', fill ' + getComputedStyle(editor).webkitTextFillColor);
+
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem('mdeditor-settings')); } catch {}
+    check('выбор сохранён', saved && saved.editorHighlight === false,
+      JSON.stringify(saved && saved.editorHighlight));
+
+    const paintAgain = Array.from(document.querySelectorAll('#editor-toolbar button'))
+      .find((b) => (b.getAttribute('aria-label') || '') === 'Подсветка разметки в редакторе');
+    paintAgain.click();
+    await sleep(200);
+    check('подсветка включается обратно',
+      getComputedStyle(layer).display !== 'none' && cls('md-heading') === 3);
+
+    // ======= пустой документ =======
+    step('крайние случаи');
+    await setText('');
+    check('на пустом документе слой не ломается', layer.textContent.length <= 1,
+      JSON.stringify(layer.textContent));
+    await setText('единственная строка без перевода');
+    check('строка без перевода в конце: высоты совпадают',
+      Math.abs(layer.scrollHeight - editor.scrollHeight) < 1,
+      'поле ' + editor.scrollHeight + ', слой ' + layer.scrollHeight);
+    await setText('строка с переводом в конце\n');
+    check('строка с переводом в конце: высоты совпадают',
+      Math.abs(layer.scrollHeight - editor.scrollHeight) < 1,
+      'поле ' + editor.scrollHeight + ', слой ' + layer.scrollHeight);
+    await setText('раз\n\n\nчетыре');
+    check('пустые строки посередине: высоты совпадают',
+      Math.abs(layer.scrollHeight - editor.scrollHeight) < 1,
+      'поле ' + editor.scrollHeight + ', слой ' + layer.scrollHeight);
+
+    // Курсивных кириллических начертаний у моноширинного шрифта может не быть,
+    // тогда слой подставит другой шрифт — с иными ширинами — и краска уедет
+    // относительно букв. Проверяем на длинной курсивной строке, которая обязана
+    // перенестись: при разных ширинах перенос встанет в другом месте.
+    await setText('> ' + 'длинная курсивная цитата по-русски '.repeat(12));
+    check('длинная курсивная кириллица: высоты совпадают',
+      Math.abs(layer.scrollHeight - editor.scrollHeight) < 1,
+      'поле ' + editor.scrollHeight + ', слой ' + layer.scrollHeight);
+    await setText('*' + 'подчёркнутый курсивом русский текст '.repeat(12) + '*');
+    check('длинный курсивный фрагмент: высоты совпадают',
+      Math.abs(layer.scrollHeight - editor.scrollHeight) < 1,
+      'поле ' + editor.scrollHeight + ', слой ' + layer.scrollHeight);
+
+    out.push('');
+    out.push('ИТОГО: ' + passed + ' пройдено, ' + failed + ' провалено');
+    flush();
+    document.title = failed === 0 ? 'ALL-PASS' : 'FAILURES-' + failed;
+  })().catch((error) => {
+    document.getElementById('results').textContent += '\nИСКЛЮЧЕНИЕ: ' + (error && error.stack || error);
+    document.title = 'FAILURES-CRASH';
+  });
+  </script>
+</body>
+</html>
