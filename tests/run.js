@@ -22,15 +22,7 @@ const DEBUG_PORT = Number(process.env.MDEDITOR_DEBUG_PORT || 9333);
 const ROOT = path.resolve(__dirname, '..');
 const PAGE_TIMEOUT_MS = 120000;
 
-const SUITE = [
-  'tests/preview-sanitize-and-copy.html',
-  'tests/preview-url-obfuscation.html',
-  'tests/tree-and-storage.html',
-  'tests/drop-folders.html',
-  'tests/delete-and-undo.html',
-  'tests/migration-legacy.html',
-  'tests/multitab-sync.html',
-];
+const SUITE = require('./suite.js');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',

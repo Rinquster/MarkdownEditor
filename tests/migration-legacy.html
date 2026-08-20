@@ -79,7 +79,12 @@
     async function bootFrame() {
       // общий профиль браузера между тестами: чужой аварийный снимок
       // подменил бы содержимое открытого файла
-      try { localStorage.removeItem('mdeditor-emergency'); } catch {}
+      // общий профиль браузера между тестами: чужие настройки задали бы
+      // другой режим, и панель, которую мы проверяем, просто не отрисовалась бы
+      try {
+        localStorage.removeItem('mdeditor-emergency');
+        localStorage.removeItem('mdeditor-settings');
+      } catch {}
       const frame = document.createElement('iframe');
       frame.src = '_app-frame.html';
       document.getElementById('host').appendChild(frame);

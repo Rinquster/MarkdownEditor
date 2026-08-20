@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>MDEditor — режим «Вместе» и синхронная прокрутка</title>
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+  <header class="app-header">
+    <div class="brand"><span class="brand-mark">MD</span><h1>MD</h1></div>
+    <div class="segmented">
+      <button type="button" id="mode-preview-button">Просмотр</button>
+      <button type="button" id="mode-split-button">Вместе</button>
+      <button type="button" id="mode-editor-button">Редактор</button>
+    </div>
+    <div class="header-settings">
+      <select id="preview-font-select"><option value="Lato">Lato</option><option value="Inter">Inter</option><option value="Roboto">Roboto</option><option value="Liberation Sans">Liberation Sans</option><option value="Liberation Serif">Liberation Serif</option></select>
+      <button type="button" id="preview-size-dec">−</button><span id="preview-size-value">17</span>
+      <button type="button" id="preview-size-inc">+</button>
+      <button type="button" id="editor-size-dec">−</button><span id="editor-size-value">14</span>
+      <button type="button" id="editor-size-inc">+</button>
+      <button type="button" id="theme-button"></button><span id="doc-path"></span><span id="doc-save"></span><span id="doc-stats"></span><button type="button" id="toc-button"><span>Оглавление</span></button><button type="button" id="copy-doc-button"><span>Текст</span></button>
+      <button type="button" id="download-zip-button"><span>ZIP</span></button>
+    </div>
+  </header>
+
+  <button type="button" id="sidebar-toggle"></button>
+  <div id="sidebar-backdrop" class="sidebar-backdrop" hidden></div>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar">
+      <div class="pane-title"><span>Файлы</span>
+        <div class="pane-actions">
+          <button type="button" id="new-file-button">+</button>
+          <button type="button" id="new-folder-button">D+</button>
+          <button type="button" id="delete-all-button">X</button>
+          <button type="button" id="upload-button">↑</button>
+        </div>
+      </div>
+      <div class="file-search"><input id="file-search-input" type="search"></div>
+      <div id="file-list" class="file-list"></div>
+      <div class="sidebar-footer"><span id="status-line">…</span></div>
+    </aside>
+    <div id="sidebar-resizer" class="sidebar-resizer"></div>
+    <main class="content" id="content">
+      <div id="editor-pane" class="editor-pane" hidden><div id="editor-toolbar" class="editor-toolbar"></div><div class="editor-surface"><pre id="editor-highlight" class="editor-highlight" aria-hidden="true"></pre><textarea id="editor"></textarea></div></div>
+      <div id="split-resizer" class="split-resizer" hidden></div>
+      <div id="preview-pane" class="preview-pane"><div id="preview-body" class="markdown-body"></div></div>
+      <aside id="toc-panel" class="toc-panel" hidden><div class="toc-title">Оглавление</div><nav id="toc-list" class="toc-list"></nav></aside>
+      <div id="welcome-pane" class="welcome-pane" hidden><div class="welcome-card"></div></div>
+    </main>
+  </div>
+
+  <div id="find-bar" class="find-bar" hidden><input id="find-input" type="search"><span id="find-count" class="find-count"></span><button type="button" id="find-prev">↑</button><button type="button" id="find-next">↓</button><button type="button" id="find-close">✕</button></div>
+  <div id="file-context-menu" class="context-menu" hidden></div>
+  <div id="dialog-overlay" class="dialog-overlay" hidden>
+    <div class="dialog"><p id="dialog-message"></p><div id="dialog-buttons" class="dialog-buttons"></div></div>
+  </div>
+  <input id="upload-input" type="file" multiple hidden>
+  <pre id="results" style="position:fixed;left:-99999px"></pre>
+
+  <script src="../vendor/marked.min.js"></script>
+  <script>
+  (async () => {
+    const out = []; let passed = 0, failed = 0;
+    const flush = () => { document.getElementById('results').textContent = out.join('\n'); };
+    const check = (name, ok, detail) => {
+      ok ? passed++ : failed++;
+      out.push((ok ? 'PASS  ' : 'FAIL  ') + name + (ok || !detail ? '' : '\n        → ' + detail));
+      flush();
+    };
+    const step = (label) => { out.push('.. ' + label); flush(); };
+    const el = (id) => document.getElementById(id);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    window.addEventListener('error', (e) => { out.push('ОШИБКА: ' + e.message); flush(); });
+
+    await new Promise((resolve) => {
+      const request = indexedDB.deleteDatabase('mdeditor');
+      request.onsuccess = request.onerror = request.onblocked = () => resolve();
+    });
+    try {
+      localStorage.removeItem('mdeditor-emergency');
+      localStorage.removeItem('mdeditor-settings');
+    } catch {}
+
+    await new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = '../js/app.js';
+      script.onload = resolve; script.onerror = reject;
+      document.body.appendChild(script);
+    });
+    for (let i = 0; i < 80 && el('file-list').children.length === 0; i++) await sleep(50);
+
+    // ---- документ, где строки исходника и высота превью заведомо расходятся ----
+    // Блок кода — много строк исходника, мало высоты. Абзацы — наоборот.
+    const parts = ['# Начало', ''];
+    for (let i = 1; i <= 6; i++) {
+      parts.push('## Раздел ' + i, '');
+      parts.push('Абзац раздела ' + i + '. ' + 'Слово '.repeat(40), '');
+      parts.push('```js');
+      for (let k = 0; k < 25; k++) parts.push('const переменная' + i + '_' + k + ' = ' + k + ';');
+      parts.push('```', '');
+    }
+    parts.push('## Конец', '', 'Финальный абзац.');
+    const DOC = parts.join('\n');
+
+    step('вводим длинный документ');
+    el('mode-editor-button').click();
+    await sleep(60);
+    const editor = el('editor');
+    editor.value = DOC;
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    await sleep(120);
+
+    // ================= 4.1 режим «Вместе» =================
+    step('включаем режим «Вместе»');
+    el('mode-split-button').click();
+    await sleep(400);
+
+    check('обе панели видны', !el('editor-pane').hidden && !el('preview-pane').hidden);
+    check('делитель показан', !el('split-resizer').hidden);
+    check('кнопка режима отмечена нажатой',
+      el('mode-split-button').getAttribute('aria-pressed') === 'true');
+    check('на body выставлен класс режима', document.body.classList.contains('mode-split'));
+
+    const editorRect = el('editor-pane').getBoundingClientRect();
+    const previewRect = el('preview-pane').getBoundingClientRect();
+    check('панели стоят рядом, а не друг под другом',
+      editorRect.right <= previewRect.left + 8 && Math.abs(editorRect.top - previewRect.top) < 2,
+      'редактор ' + JSON.stringify(editorRect.toJSON ? editorRect.toJSON() : {}) );
+    check('делитель между ними',
+      el('split-resizer').getBoundingClientRect().left >= editorRect.right - 1);
+
+    // ================= разметка строк =================
+    const marked = Array.from(el('preview-body').querySelectorAll('[data-line]'));
+    check('блоки превью помечены строкой исходника', marked.length > 10,
+      'помечено блоков: ' + marked.length);
+    const lineValues = marked.map((n) => Number(n.dataset.line));
+    check('номера строк возрастают',
+      lineValues.every((v, i) => i === 0 || v >= lineValues[i - 1]),
+      JSON.stringify(lineValues.slice(0, 12)));
+
+    const docLines = DOC.split('\n');
+    const wrongAnchors = marked.filter((node) => {
+      const line = Number(node.dataset.line);
+      const text = (docLines[line] || '').trim();
+      if (node.tagName === 'H1' || node.tagName === 'H2') return !text.startsWith('#');
+      if (node.classList.contains('code-block')) return !text.startsWith('```');
+      if (node.tagName === 'P') return text.startsWith('#') || text.startsWith('```');
+      return false;
+    });
+    check('каждая метка указывает на свою строку исходника', wrongAnchors.length === 0,
+      wrongAnchors.slice(0, 3).map((n) =>
+        n.tagName + '@' + n.dataset.line + ' → ' + JSON.stringify(docLines[Number(n.dataset.line)])).join(' | '));
+
+    // ================= 4.2 синхронная прокрутка =================
+    step('прокручиваем редактор');
+    const previewPane = el('preview-pane');
+    check('обе панели прокручиваемы',
+      editor.scrollHeight > editor.clientHeight && previewPane.scrollHeight > previewPane.clientHeight,
+      'редактор ' + editor.scrollHeight + '/' + editor.clientHeight
+        + ', превью ' + previewPane.scrollHeight + '/' + previewPane.clientHeight);
+
+    const previewTopAt = async (editorTop) => {
+      editor.scrollTop = editorTop;
+      editor.dispatchEvent(new Event('scroll', { bubbles: false }));
+      await sleep(120);
+      return previewPane.scrollTop;
+    };
+
+    const atStart = await previewTopAt(0);
+    check('в начале превью тоже вверху', atStart < 30, String(atStart));
+
+    const editorMax = editor.scrollHeight - editor.clientHeight;
+    const atMiddle = await previewTopAt(Math.round(editorMax / 2));
+    check('середина прокрутила превью', atMiddle > atStart + 50, String(atMiddle));
+
+    const atEnd = await previewTopAt(editorMax);
+    check('конец прокрутил превью дальше середины', atEnd > atMiddle, String(atEnd));
+
+    // Главная проверка: соответствие держится по содержимому, а не по процентам.
+    // Ищем в превью заголовок «Раздел 4» и убеждаемся, что при прокрутке редактора
+    // к его строке этот заголовок оказывается вверху панели.
+    step('проверяем привязку по содержимому');
+    const targetLine = docLines.findIndex((l) => l.trim() === '## Раздел 4');
+    const targetNode = marked.find((n) => Number(n.dataset.line) === targetLine);
+    check('заголовок «Раздел 4» найден и помечен', Boolean(targetNode),
+      'строка ' + targetLine);
+
+    if (targetNode) {
+      // прокручиваем редактор ровно к строке заголовка через измеренную позицию
+      const probe = document.createElement('div');
+      probe.style.cssText = 'position:absolute;left:-99999px;visibility:hidden;white-space:pre-wrap;overflow-wrap:break-word';
+      const style = getComputedStyle(editor);
+      for (const prop of ['fontFamily','fontSize','fontWeight','lineHeight','letterSpacing','tabSize','paddingTop','paddingRight','paddingBottom','paddingLeft']) {
+        probe.style[prop] = style[prop];
+      }
+      probe.style.width = editor.clientWidth + 'px';
+      const before = docLines.slice(0, targetLine).join('\n') + '\n';
+      probe.appendChild(document.createTextNode(before));
+      const marker = document.createElement('span');
+      marker.textContent = '​';
+      probe.appendChild(marker);
+      document.body.appendChild(probe);
+      const editorTopOfTarget = marker.getBoundingClientRect().top - probe.getBoundingClientRect().top;
+      probe.remove();
+
+      const previewTop = await previewTopAt(editorTopOfTarget);
+      const nodeTop = targetNode.getBoundingClientRect().top - previewPane.getBoundingClientRect().top;
+      check('при прокрутке к разделу он оказывается вверху превью',
+        Math.abs(nodeTop) < 60,
+        'смещение заголовка от верха панели: ' + Math.round(nodeTop) + ' px'
+          + ' (превью на ' + Math.round(previewTop) + ')');
+    }
+
+    // ================= обратное направление =================
+    step('прокручиваем превью');
+    const beforeBack = editor.scrollTop;
+    previewPane.scrollTop = 40;
+    previewPane.dispatchEvent(new Event('scroll', { bubbles: false }));
+    await sleep(150);
+    check('прокрутка превью двигает редактор', editor.scrollTop < beforeBack,
+      'было ' + Math.round(beforeBack) + ', стало ' + Math.round(editor.scrollTop));
+
+    // ================= делитель =================
+    step('двигаем делитель');
+    const widthBefore = el('editor-pane').getBoundingClientRect().width;
+    const contentRect = el('content').getBoundingClientRect();
+    const resizer = el('split-resizer');
+    resizer.setPointerCapture = () => {};
+    resizer.releasePointerCapture = () => {};
+    resizer.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, clientX: contentRect.left + widthBefore }));
+    resizer.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerId: 1, clientX: contentRect.left + contentRect.width * 0.3 }));
+    resizer.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
+    await sleep(200);
+    const widthAfter = el('editor-pane').getBoundingClientRect().width;
+    check('делитель изменил пропорцию', widthAfter < widthBefore - 40,
+      'было ' + Math.round(widthBefore) + ', стало ' + Math.round(widthAfter));
+
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem('mdeditor-settings')); } catch {}
+    check('пропорция сохранена в настройках',
+      saved && saved.splitPercent >= 20 && saved.splitPercent < 45,
+      JSON.stringify(saved && saved.splitPercent));
+    check('режим сохранён в настройках', saved && saved.mode === 'split',
+      JSON.stringify(saved && saved.mode));
+
+    resizer.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    await sleep(200);
+    check('двойной клик вернул поровну',
+      Math.abs(el('editor-pane').getBoundingClientRect().width - contentRect.width / 2) < 30,
+      String(Math.round(el('editor-pane').getBoundingClientRect().width)));
+
+    // ================= живое превью =================
+    step('правим текст при открытых панелях');
+    editor.value = DOC + '\n\n## Дописанный раздел\n\nНовый текст.';
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    await sleep(500);
+    check('превью подхватило правку без переключения режима',
+      /Дописанный раздел/.test(el('preview-body').textContent));
+
+    // ================= 4.3 позиция чтения =================
+    step('меняем кегль и проверяем позицию чтения');
+    el('mode-preview-button').click();
+    await sleep(250);
+    previewPane.scrollTop = Math.round((previewPane.scrollHeight - previewPane.clientHeight) * 0.5);
+    previewPane.dispatchEvent(new Event('scroll', { bubbles: false }));
+    await sleep(120);
+    const ratioBefore = previewPane.scrollTop / (previewPane.scrollHeight - previewPane.clientHeight);
+
+    el('preview-size-inc').click();
+    await sleep(400);
+    const ratioAfter = previewPane.scrollTop / (previewPane.scrollHeight - previewPane.clientHeight);
+    check('после смены кегля доля прочитанного сохранилась',
+      Math.abs(ratioAfter - ratioBefore) < 0.06,
+      'было ' + ratioBefore.toFixed(3) + ', стало ' + ratioAfter.toFixed(3));
+
+    // ================= режимы не ломают друг друга =================
+    step('гоняем режимы по кругу');
+    el('mode-editor-button').click(); await sleep(150);
+    check('в режиме редактора превью скрыто', el('preview-pane').hidden && el('split-resizer').hidden);
+    el('mode-preview-button').click(); await sleep(150);
+    check('в режиме просмотра редактор скрыт', el('editor-pane').hidden);
+    el('mode-split-button').click(); await sleep(300);
+    check('возврат в «Вместе» показывает обе панели',
+      !el('editor-pane').hidden && !el('preview-pane').hidden);
+    check('текст в редакторе не потерялся', /Дописанный раздел/.test(editor.value));
+
+    out.push('');
+    out.push('ИТОГО: ' + passed + ' пройдено, ' + failed + ' провалено');
+    flush();
+    document.title = failed === 0 ? 'ALL-PASS' : 'FAILURES-' + failed;
+  })().catch((error) => {
+    document.getElementById('results').textContent += '\nИСКЛЮЧЕНИЕ: ' + (error && error.stack || error);
+    document.title = 'FAILURES-CRASH';
+  });
+  </script>
+</body>
+</html>

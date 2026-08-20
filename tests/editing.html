@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>MDEditor — правка текста</title>
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+  <header class="app-header">
+    <div class="brand"><span class="brand-mark">MD</span><h1>MD</h1></div>
+    <div class="segmented">
+      <button type="button" id="mode-preview-button">Просмотр</button>
+      <button type="button" id="mode-split-button">Вместе</button>
+      <button type="button" id="mode-editor-button">Редактор</button>
+    </div>
+    <div class="header-settings">
+      <select id="preview-font-select"><option value="Lato">Lato</option><option value="Inter">Inter</option><option value="Roboto">Roboto</option><option value="Liberation Sans">Liberation Sans</option><option value="Liberation Serif">Liberation Serif</option></select>
+      <button type="button" id="preview-size-dec">−</button><span id="preview-size-value">17</span>
+      <button type="button" id="preview-size-inc">+</button>
+      <button type="button" id="editor-size-dec">−</button><span id="editor-size-value">14</span>
+      <button type="button" id="editor-size-inc">+</button>
+      <button type="button" id="theme-button"></button><span id="doc-path"></span><span id="doc-save"></span><span id="doc-stats"></span><button type="button" id="toc-button"><span>Оглавление</span></button><button type="button" id="copy-doc-button"><span>Текст</span></button>
+      <button type="button" id="download-zip-button"><span>ZIP</span></button>
+    </div>
+  </header>
+
+  <button type="button" id="sidebar-toggle"></button>
+  <div id="sidebar-backdrop" class="sidebar-backdrop" hidden></div>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar">
+      <div class="pane-title"><span>Файлы</span>
+        <div class="pane-actions">
+          <button type="button" id="new-file-button">+</button>
+          <button type="button" id="new-folder-button">D+</button>
+          <button type="button" id="delete-all-button">X</button>
+          <button type="button" id="upload-button">↑</button>
+        </div>
+      </div>
+      <div class="file-search"><input id="file-search-input" type="search"></div>
+      <div id="file-list" class="file-list"></div>
+      <div class="sidebar-footer"><span id="status-line">…</span></div>
+    </aside>
+    <div id="sidebar-resizer" class="sidebar-resizer"></div>
+    <main class="content" id="content">
+      <div id="editor-pane" class="editor-pane" hidden>
+        <div id="editor-toolbar" class="editor-toolbar" role="toolbar"></div>
+        <div class="editor-surface"><pre id="editor-highlight" class="editor-highlight" aria-hidden="true"></pre><textarea id="editor"></textarea></div>
+      </div>
+      <div id="split-resizer" class="split-resizer" hidden></div>
+      <div id="preview-pane" class="preview-pane"><div id="preview-body" class="markdown-body"></div></div>
+      <aside id="toc-panel" class="toc-panel" hidden><div class="toc-title">Оглавление</div><nav id="toc-list" class="toc-list"></nav></aside>
+      <div id="welcome-pane" class="welcome-pane" hidden><div class="welcome-card"></div></div>
+    </main>
+  </div>
+
+  <div id="find-bar" class="find-bar" hidden><input id="find-input" type="search"><span id="find-count" class="find-count"></span><button type="button" id="find-prev">↑</button><button type="button" id="find-next">↓</button><button type="button" id="find-close">✕</button></div>
+  <div id="file-context-menu" class="context-menu" hidden></div>
+  <div id="dialog-overlay" class="dialog-overlay" hidden>
+    <div class="dialog"><p id="dialog-message"></p><div id="dialog-buttons" class="dialog-buttons"></div></div>
+  </div>
+  <input id="upload-input" type="file" multiple hidden>
+  <pre id="results" style="position:fixed;left:-99999px"></pre>
+
+  <script src="../vendor/marked.min.js"></script>
+  <script>
+  (async () => {
+    const out = []; let passed = 0, failed = 0;
+    const flush = () => { document.getElementById('results').textContent = out.join('\n'); };
+    const check = (name, ok, detail) => {
+      ok ? passed++ : failed++;
+      out.push((ok ? 'PASS  ' : 'FAIL  ') + name + (ok || !detail ? '' : '\n        → ' + detail));
+      flush();
+    };
+    const step = (label) => { out.push('.. ' + label); flush(); };
+    const el = (id) => document.getElementById(id);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    window.addEventListener('error', (e) => { out.push('ОШИБКА: ' + e.message); flush(); });
+
+    await new Promise((resolve) => {
+      const request = indexedDB.deleteDatabase('mdeditor');
+      request.onsuccess = request.onerror = request.onblocked = () => resolve();
+    });
+    try {
+      localStorage.removeItem('mdeditor-emergency');
+      localStorage.removeItem('mdeditor-settings');
+    } catch {}
+
+    await new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = '../js/app.js';
+      script.onload = resolve; script.onerror = reject;
+      document.body.appendChild(script);
+    });
+    for (let i = 0; i < 80 && el('file-list').children.length === 0; i++) await sleep(50);
+
+    el('mode-editor-button').click();
+    await sleep(120);
+    const editor = el('editor');
+
+    // ---- вспомогательное ----
+    function setText(text, selStart, selEnd) {
+      editor.value = text;
+      editor.dispatchEvent(new Event('input', { bubbles: true }));
+      editor.focus();
+      editor.setSelectionRange(selStart === undefined ? text.length : selStart,
+        selEnd === undefined ? (selStart === undefined ? text.length : selStart) : selEnd);
+    }
+    function press(key, options) {
+      const init = Object.assign({ key, bubbles: true, cancelable: true }, options || {});
+      return editor.dispatchEvent(new KeyboardEvent('keydown', init));
+    }
+    const selected = () => editor.value.slice(editor.selectionStart, editor.selectionEnd);
+    const toolbarButton = (title) => Array.from(document.querySelectorAll('#editor-toolbar button'))
+      .find((b) => (b.getAttribute('aria-label') || '') === title);
+
+    // ================= 5.1 горячие клавиши =================
+    step('жирный и курсив');
+    setText('слово', 0, 5);
+    press('b', { ctrlKey: true });
+    check('Ctrl+B обернул выделение', editor.value === '**слово**', JSON.stringify(editor.value));
+    check('после обёртывания выделен текст, а не метки', selected() === 'слово', JSON.stringify(selected()));
+
+    press('b', { ctrlKey: true });
+    check('повторный Ctrl+B снял обёртку', editor.value === 'слово', JSON.stringify(editor.value));
+
+    setText('слово', 0, 5);
+    press('i', { ctrlKey: true });
+    check('Ctrl+I обернул курсивом', editor.value === '*слово*', JSON.stringify(editor.value));
+
+    setText('**слово**', 0, 9);
+    press('b', { ctrlKey: true });
+    check('снимается и когда метки внутри выделения', editor.value === 'слово',
+      JSON.stringify(editor.value));
+
+    setText('пусто', 5);
+    press('b', { ctrlKey: true });
+    check('на пустом выделении подставлен образец', editor.value === 'пусто**жирный**',
+      JSON.stringify(editor.value));
+    check('образец выделен для замены', selected() === 'жирный', JSON.stringify(selected()));
+
+    setText('код', 0, 3);
+    press('`', { ctrlKey: true });
+    check('Ctrl+` обернул кодом', editor.value === '`код`', JSON.stringify(editor.value));
+
+    step('ссылки');
+    setText('подпись', 0, 7);
+    press('k', { ctrlKey: true });
+    check('Ctrl+K сделал ссылку из подписи', editor.value === '[подпись](https://)',
+      JSON.stringify(editor.value));
+    check('курсор встал в адрес', editor.selectionStart === editor.value.length - 1,
+      'позиция ' + editor.selectionStart + ' из ' + editor.value.length);
+
+    setText('https://example.com', 0, 19);
+    press('k', { ctrlKey: true });
+    check('выделенный адрес попал в скобки',
+      editor.value === '[текст ссылки](https://example.com)', JSON.stringify(editor.value));
+    check('подпись выделена для замены', selected() === 'текст ссылки', JSON.stringify(selected()));
+
+    // ================= 5.2 умные списки =================
+    step('продолжение списков');
+    setText('- первый', 8);
+    press('Enter');
+    check('Enter продолжил маркированный список', editor.value === '- первый\n- ',
+      JSON.stringify(editor.value));
+
+    setText('3. третий', 9);
+    press('Enter');
+    check('нумерация продолжилась следующим числом', editor.value === '3. третий\n4. ',
+      JSON.stringify(editor.value));
+
+    setText('- [x] сделано', 13);
+    press('Enter');
+    check('пункт задачи продолжился пустым чекбоксом', editor.value === '- [x] сделано\n- [ ] ',
+      JSON.stringify(editor.value));
+
+    setText('> цитата', 8);
+    press('Enter');
+    check('цитата продолжилась', editor.value === '> цитата\n> ', JSON.stringify(editor.value));
+
+    setText('  - вложенный', 13);
+    press('Enter');
+    check('отступ вложенного пункта сохранён', editor.value === '  - вложенный\n  - ',
+      JSON.stringify(editor.value));
+
+    step('выход из списка');
+    setText('- первый\n- ', 11);
+    press('Enter');
+    check('Enter на пустом пункте убирает маркер', editor.value === '- первый\n',
+      JSON.stringify(editor.value));
+
+    setText('обычная строка', 14);
+    const notPrevented = press('Enter');
+    check('вне списка Enter не перехватывается', notPrevented === true);
+
+    step('отступы');
+    setText('строка', 0);
+    press('Tab');
+    check('Tab без выделения вставляет отступ', editor.value === '  строка',
+      JSON.stringify(editor.value));
+
+    setText('первая\nвторая', 0, 13);
+    press('Tab');
+    check('Tab на выделении сдвинул обе строки', editor.value === '  первая\n  вторая',
+      JSON.stringify(editor.value));
+
+    press('Tab', { shiftKey: true });
+    check('Shift+Tab вернул на место', editor.value === 'первая\nвторая',
+      JSON.stringify(editor.value));
+
+    setText('    вложенная', 6);
+    press('Tab', { shiftKey: true });
+    check('Shift+Tab без выделения снимает отступ у строки',
+      editor.value === '  вложенная', JSON.stringify(editor.value));
+
+    // ================= 5.3 панель форматирования =================
+    step('панель форматирования');
+    const buttons = Array.from(document.querySelectorAll('#editor-toolbar button'));
+    check('панель отрисована', buttons.length >= 9, 'кнопок: ' + buttons.length);
+    check('у кнопок есть подписи для чтения с экрана',
+      buttons.every((b) => b.getAttribute('aria-label')));
+
+    setText('текст', 0, 5);
+    const boldButton = toolbarButton('Жирный (Ctrl+B)');
+    check('кнопка «Жирный» найдена', Boolean(boldButton));
+    // нажатие не должно уводить фокус: иначе выделение пропадёт
+    const mouseDownPrevented = !boldButton.dispatchEvent(
+      new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    check('кнопка гасит mousedown, сохраняя выделение', mouseDownPrevented);
+    boldButton.click();
+    check('кнопка панели обернула выделение', editor.value === '**текст**',
+      JSON.stringify(editor.value));
+
+    setText('заголовок', 0);
+    toolbarButton('Заголовок').click();
+    check('кнопка заголовка добавила решётки', editor.value === '## заголовок',
+      JSON.stringify(editor.value));
+    toolbarButton('Заголовок').click();
+    check('повторное нажатие сняло заголовок', editor.value === 'заголовок',
+      JSON.stringify(editor.value));
+
+    setText('раз\nдва\nтри', 0, 11);
+    toolbarButton('Нумерованный список').click();
+    check('нумерованный список пронумеровал строки',
+      editor.value === '1. раз\n2. два\n3. три', JSON.stringify(editor.value));
+
+    toolbarButton('Маркированный список').click();
+    check('переключение на маркеры убрало числа',
+      editor.value === '- раз\n- два\n- три', JSON.stringify(editor.value));
+
+    setText('цитата', 0);
+    toolbarButton('Цитата').click();
+    check('кнопка цитаты добавила знак', editor.value === '> цитата',
+      JSON.stringify(editor.value));
+
+    step('сворачивание панели');
+    const toggle = document.querySelector('#editor-toolbar .toolbar-toggle');
+    check('кнопка сворачивания есть', Boolean(toggle));
+    toggle.click();
+    await sleep(80);
+    check('панель свернулась',
+      el('editor-toolbar').classList.contains('collapsed'));
+    check('в свёрнутом виде остаётся только кнопка разворота',
+      document.querySelectorAll('#editor-toolbar button').length === 1,
+      'кнопок: ' + document.querySelectorAll('#editor-toolbar button').length);
+
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem('mdeditor-settings')); } catch {}
+    check('состояние панели сохранено', saved && saved.toolbar === false,
+      JSON.stringify(saved && saved.toolbar));
+
+    document.querySelector('#editor-toolbar .toolbar-toggle').click();
+    await sleep(80);
+    check('панель разворачивается обратно',
+      !el('editor-toolbar').classList.contains('collapsed')
+      && document.querySelectorAll('#editor-toolbar button').length > 1);
+
+    // ================= 5.4 подсветка кода в превью =================
+    step('подсветка блоков кода');
+    const CODE_DOC = [
+      '```js',
+      '// комментарий',
+      'const привет = "мир";',
+      'function считать(переменная1) { return переменная1 + 42; }',
+      '```',
+      '',
+      '```python',
+      '# комментарий',
+      'def считать(x):',
+      '    return x * 2',
+      '```',
+      '',
+      '```неизвестныйязык',
+      'const a = 1;',
+      '```',
+      '',
+      '```html',
+      '<div class="опасно"><script>alert(1)<\/script></div>',
+      '```',
+    ].join('\n');
+
+    setText(CODE_DOC, CODE_DOC.length);
+    await sleep(200);
+    el('mode-preview-button').click();
+    await sleep(350);
+
+    const blocks = Array.from(el('preview-body').querySelectorAll('.code-block'));
+    check('все четыре блока отрисованы', blocks.length === 4, 'блоков: ' + blocks.length);
+
+    const jsBlock = blocks[0];
+    check('в js подсвечены ключевые слова',
+      jsBlock.querySelectorAll('.tok-keyword').length >= 2,
+      'найдено: ' + jsBlock.querySelectorAll('.tok-keyword').length);
+    check('в js подсвечена строка', jsBlock.querySelectorAll('.tok-string').length === 1);
+    check('в js подсвечен комментарий', jsBlock.querySelectorAll('.tok-comment').length === 1);
+    check('кириллическое имя функции выделено',
+      jsBlock.querySelectorAll('.tok-function').length >= 1,
+      'найдено: ' + jsBlock.querySelectorAll('.tok-function').length);
+    // границы слова в JS считаются по ASCII, поэтому цифра внутри кириллического
+    // имени легко становится «числом» — проверяем, что этого не происходит
+    check('цифра внутри имени не подсвечена как число',
+      Array.from(jsBlock.querySelectorAll('.tok-number')).every((n) => n.textContent === '42'),
+      Array.from(jsBlock.querySelectorAll('.tok-number')).map((n) => n.textContent).join(' | '));
+
+    const pyBlock = blocks[1];
+    check('в python подсвечены ключевые слова',
+      pyBlock.querySelectorAll('.tok-keyword').length >= 2,
+      'найдено: ' + pyBlock.querySelectorAll('.tok-keyword').length);
+    check('в python подсвечен комментарий', pyBlock.querySelectorAll('.tok-comment').length === 1);
+
+    check('незнакомый язык остаётся без подсветки',
+      blocks[2].querySelectorAll('[class^="tok-"]').length === 0,
+      'найдено: ' + blocks[2].querySelectorAll('[class^="tok-"]').length);
+
+    const htmlBlock = blocks[3];
+    check('подсветка не превращает содержимое кода в разметку',
+      htmlBlock.querySelector('script') === null && htmlBlock.querySelector('div.опасно') === null);
+    check('содержимое html-блока осталось текстом',
+      htmlBlock.textContent.includes('<script>alert(1)<' + '/script>'),
+      JSON.stringify(htmlBlock.textContent.slice(0, 60)));
+
+    // подсветка не должна ломать копирование
+    window.__copied = null;
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: async (t) => { window.__copied = t; } },
+    });
+    jsBlock.querySelector('.code-copy').click();
+    await sleep(120);
+    check('кнопка копирует исходный код без следов подсветки',
+      window.__copied === '// комментарий\nconst привет = "мир";\nfunction считать(переменная1) { return переменная1 + 42; }\n',
+      JSON.stringify(window.__copied));
+
+    el('mode-editor-button').click();
+    await sleep(150);
+
+    // ================= правки доезжают до модели =================
+    step('правки сохраняются');
+    setText('# Проверка сохранения', 21);
+    await sleep(700);
+    el('mode-preview-button').click();
+    await sleep(250);
+    check('текст доехал до превью',
+      /Проверка сохранения/.test(el('preview-body').textContent),
+      el('preview-body').textContent.slice(0, 60));
+
+    out.push('');
+    out.push('ИТОГО: ' + passed + ' пройдено, ' + failed + ' провалено');
+    flush();
+    document.title = failed === 0 ? 'ALL-PASS' : 'FAILURES-' + failed;
+  })().catch((error) => {
+    document.getElementById('results').textContent += '\nИСКЛЮЧЕНИЕ: ' + (error && error.stack || error);
+    document.title = 'FAILURES-CRASH';
+  });
+  </script>
+</body>
+</html>
