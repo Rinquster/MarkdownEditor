@@ -1564,6 +1564,7 @@
     previewPane.hidden = !hasFile || settings.mode === 'editor';
     editorPane.hidden = !hasFile || settings.mode === 'preview';
     splitResizer.hidden = !hasFile || !split;
+    if (previewPane.hidden) { discardCellEditor(); hideTableToolbar(); }
     if (!hasFile) return;
 
     if (settings.mode !== 'preview') {
@@ -1610,6 +1611,8 @@
   function renderPreview(file) {
     const source = file.content || '';
     const token = ++previewToken;
+    discardCellEditor();
+    hideTableToolbar();
     previewBody.replaceChildren();
 
     let tokens = null;
@@ -1645,8 +1648,11 @@
         if (html) {
           const doc = parseSafeDocument(html);
           const nodes = Array.from(doc.body.childNodes);
+          const blockLines = countNewlines(item.raw.replace(/\n+$/, '')) + 1;
           for (const node of nodes) {
-            if (node.nodeType === Node.ELEMENT_NODE) node.dataset.line = String(line);
+            if (node.nodeType !== Node.ELEMENT_NODE) continue;
+            node.dataset.line = String(line);
+            node.dataset.lineCount = String(blockLines);
           }
           previewBody.append(...nodes);
         }
@@ -1662,6 +1668,8 @@
       }
     }
     decorateCodeBlocks(previewBody);
+    decorateTables(previewBody);
+    enableTaskCheckboxes(previewBody);
     assignHeadingIds(previewBody);
     applyTocVisibility();
     if (findQuery && settings.mode === 'preview') {
@@ -1693,6 +1701,682 @@
       }
     }
   }
+
+  // ---------- Прямое редактирование в превью ----------
+
+  // Полноценный WYSIWYG для всей разметки здесь не нужен и вреден: исходником
+  // остаётся текст, а contenteditable потребовал бы второго представления документа
+  // и вечной борьбы за курсор. Но два вида блоков правятся текстом мучительно,
+  // а обратно в исходник ложатся однозначно — таблицы и списки задач. Их и делаем
+  // кликабельными: правка идёт ровно в те строки, из которых блок отрисован
+  // (data-line и data-line-count проставляет renderPreview).
+
+  const DIRECT_UNDO_LIMIT = 50;
+  const directUndoStack = [];
+
+  function pushDirectUndo(file) {
+    directUndoStack.push({ fileId: file.id, content: file.content });
+    if (directUndoStack.length > DIRECT_UNDO_LIMIT) directUndoStack.shift();
+  }
+
+  // Правка из превью не проходит через textarea, поэтому родная история отмены
+  // о ней не знает. Держим свою — иначе случайный клик по чекбоксу не отменить.
+  function undoDirectEdit() {
+    const file = fileById(currentId);
+    if (!file) return false;
+    for (let i = directUndoStack.length - 1; i >= 0; i -= 1) {
+      if (directUndoStack[i].fileId !== file.id) continue;
+      const entry = directUndoStack.splice(i, 1)[0];
+      writeDocumentContent(file, entry.content);
+      renderPreviewNow();
+      setStatus('Правка отменена');
+      return true;
+    }
+    return false;
+  }
+
+  function writeDocumentContent(file, content) {
+    if (file.content === content) return;
+    file.content = content;
+    file.updatedAt = nowStamp();
+    markDirty(file.id);
+    scheduleAutosave();
+    // Буфер редактора держим в согласии с файлом даже в режиме просмотра:
+    // иначе переключение режимов подсунуло бы старый текст.
+    if (editorEl.value !== content) {
+      const start = editorEl.selectionStart;
+      const end = editorEl.selectionEnd;
+      const scrollTop = editorEl.scrollTop;
+      editorEl.value = content;
+      editorEl.selectionStart = Math.min(start, content.length);
+      editorEl.selectionEnd = Math.min(end, content.length);
+      editorEl.scrollTop = scrollTop;
+      if (settings.mode !== 'preview') scheduleHighlight();
+    }
+  }
+
+  function renderPreviewNow() {
+    const file = fileById(currentId);
+    if (file) renderPreview(file);
+  }
+
+  // строки исходника, которые занимает блок превью
+  function blockSourceRange(block) {
+    if (!block) return null;
+    const start = Number(block.dataset.line);
+    const count = Number(block.dataset.lineCount);
+    if (!Number.isFinite(start) || !Number.isFinite(count) || count < 1) return null;
+    return { start, end: start + count - 1 };
+  }
+
+  // ---- списки задач ----
+
+  const TASK_MARKER = /^(\s*(?:>\s?)*\s*(?:[-*+]|\d+[.)])\s+\[)([ xX])(\])/;
+  const FENCE_LINE = /^\s*(?:>\s?)*\s*(`{3,}|~{3,})/;
+
+  // Строки блока с отметками задач. Внутрь ``` не заглядываем: там строка вида
+  // «- [ ] пример» — текст примера, а не задача, и сбила бы нумерацию.
+  function taskMarkerLines(lines, range) {
+    const found = [];
+    let fence = '';
+    for (let i = range.start; i <= range.end && i < lines.length; i += 1) {
+      const line = lines[i];
+      const fenceMatch = FENCE_LINE.exec(line);
+      if (fenceMatch) {
+        if (!fence) fence = fenceMatch[1][0];
+        else if (fenceMatch[1][0] === fence) fence = '';
+        continue;
+      }
+      if (fence) continue;
+      if (TASK_MARKER.test(line)) found.push(i);
+    }
+    return found;
+  }
+
+  function toggleTaskCheckbox(input) {
+    const file = fileById(currentId);
+    if (!file) return false;
+    const block = input.closest('[data-line]');
+    const range = blockSourceRange(block);
+    if (!range) return false;
+
+    const boxes = Array.from(block.querySelectorAll('input[type="checkbox"]'));
+    const index = boxes.indexOf(input);
+    const lines = file.content.split('\n');
+    const markers = taskMarkerLines(lines, range);
+    // счёт не сошёлся — исходник разошёлся с превью, трогать файл нельзя
+    if (index < 0 || markers.length !== boxes.length) return false;
+
+    const lineIndex = markers[index];
+    lines[lineIndex] = lines[lineIndex].replace(TASK_MARKER,
+      (all, head, state, tail) => head + (input.checked ? 'x' : ' ') + tail);
+    pushDirectUndo(file);
+    writeDocumentContent(file, lines.join('\n'));
+    // печать и выгрузка смотрят на атрибут, а браузер меняет только свойство
+    input.toggleAttribute('checked', input.checked);
+    return true;
+  }
+
+  function enableTaskCheckboxes(root) {
+    for (const input of root.querySelectorAll('input[type="checkbox"]')) {
+      if (!input.closest('[data-line]')) continue;
+      input.disabled = false;
+      input.removeAttribute('disabled');
+      input.classList.add('task-checkbox');
+      input.title = 'Отметить или снять отметку';
+    }
+  }
+
+  // ---- таблицы ----
+
+  const TABLE_DIVIDER = /^\s*\|?[\s:|-]*-[\s:|-]*$/;
+
+  // Разбор строки таблицы на ячейки. Экранированная черта (\|) — часть текста,
+  // а не разделитель, иначе ячейка с «а \| б» разъехалась бы на две.
+  function splitTableRow(line) {
+    let text = line.trim().replace(/^\|/, '');
+    if (/(?:^|[^\\])\|$/.test(text)) text = text.slice(0, -1);
+    const cells = [];
+    let current = '';
+    for (let i = 0; i < text.length; i += 1) {
+      const char = text[i];
+      if (char === '\\' && (text[i + 1] === '|' || text[i + 1] === '\\')) {
+        current += char + text[i + 1];
+        i += 1;
+        continue;
+      }
+      if (char === '|') { cells.push(current.trim()); current = ''; continue; }
+      current += char;
+    }
+    cells.push(current.trim());
+    return cells;
+  }
+
+  function parseTableAligns(line) {
+    return splitTableRow(line).map((cell) => {
+      const left = cell.startsWith(':');
+      const right = cell.endsWith(':');
+      if (left && right) return 'center';
+      if (right) return 'right';
+      if (left) return 'left';
+      return '';
+    });
+  }
+
+  function normalizeRow(cells, columns) {
+    const row = cells.slice(0, columns);
+    while (row.length < columns) row.push('');
+    return row;
+  }
+
+  // Модель таблицы, собранная из исходника и сверенная с тем, что на экране.
+  // Не сошлось (файл поменяли в соседней вкладке, разметка нестандартная) — null,
+  // и правка не применяется: молча испортить документ хуже, чем отказаться.
+  function tableSourceModel(table) {
+    const file = fileById(currentId);
+    if (!file || !table) return null;
+    const range = blockSourceRange(table);
+    if (!range || range.end <= range.start) return null;
+
+    const lines = file.content.split('\n');
+    const block = lines.slice(range.start, range.end + 1);
+    if (block.length < 2 || !TABLE_DIVIDER.test(block[1])) return null;
+
+    const header = splitTableRow(block[0]);
+    const columns = header.length;
+    const aligns = normalizeRow(parseTableAligns(block[1]), columns);
+    const body = block.slice(2)
+      .filter((line) => line.trim() !== '')
+      .map((line) => normalizeRow(splitTableRow(line), columns));
+
+    if (table.rows.length !== body.length + 1) return null;
+    if (!table.rows[0] || table.rows[0].cells.length !== columns) return null;
+
+    return {
+      file, lines, range,
+      indent: /^\s*/.exec(block[0])[0],
+      header: normalizeRow(header, columns),
+      aligns, body,
+    };
+  }
+
+  // Обратно в текст — с выравниванием столбцов по ширине: такую таблицу
+  // не стыдно потом править и руками.
+  function serializeTableModel(model) {
+    const columns = model.header.length;
+    const widths = [];
+    for (let c = 0; c < columns; c += 1) {
+      let width = model.header[c].length;
+      for (const row of model.body) width = Math.max(width, row[c].length);
+      widths.push(Math.max(3, width));
+    }
+    const pad = (text, width) => text + ' '.repeat(Math.max(0, width - text.length));
+    const rowLine = (cells) => model.indent + '| '
+      + cells.map((cell, c) => pad(cell, widths[c])).join(' | ') + ' |';
+    const dividerCell = (align, width) => {
+      if (align === 'center') return ':' + '-'.repeat(width - 2) + ':';
+      if (align === 'right') return '-'.repeat(width - 1) + ':';
+      if (align === 'left') return ':' + '-'.repeat(width - 1);
+      return '-'.repeat(width);
+    };
+    return [
+      rowLine(model.header),
+      model.indent + '| ' + model.aligns.map((align, c) => dividerCell(align, widths[c])).join(' | ') + ' |',
+      ...model.body.map(rowLine),
+    ];
+  }
+
+  // true, если число строк изменилось: тогда data-line у блоков ниже уехал
+  // и превью надо перерисовать целиком
+  function applyTableModel(model) {
+    const replacement = serializeTableModel(model);
+    const oldCount = model.range.end - model.range.start + 1;
+    const next = model.lines.slice();
+    next.splice(model.range.start, oldCount, ...replacement);
+    pushDirectUndo(model.file);
+    writeDocumentContent(model.file, next.join('\n'));
+    return replacement.length !== oldCount;
+  }
+
+  const unescapeCell = (text) => text.replace(/\\\|/g, '|');
+  // в ячейке не бывает переводов строки, а черту обязательно экранируем
+  const escapeCell = (text) => text.replace(/\s+/g, ' ').trim().replace(/\|/g, '\\|');
+
+  function cellCoords(cell) {
+    return { row: cell.parentElement.rowIndex, column: cell.cellIndex };
+  }
+
+  function modelCellText(model, row, column) {
+    const cells = row === 0 ? model.header : model.body[row - 1];
+    return cells ? (cells[column] || '') : '';
+  }
+
+  function setModelCellText(model, row, column, text) {
+    const cells = row === 0 ? model.header : model.body[row - 1];
+    if (cells) cells[column] = text;
+  }
+
+  function renderCellContent(cell, source) {
+    let html = '';
+    try {
+      html = window.marked.parseInline(source || '');
+    } catch (error) {
+      console.error(error);
+    }
+    const doc = parseSafeDocument(html);
+    cell.replaceChildren(...Array.from(doc.body.childNodes));
+    cell.classList.toggle('cell-empty', !source.trim());
+  }
+
+  function decorateTables(root) {
+    for (const table of root.querySelectorAll('table[data-line]')) {
+      table.classList.add('table-editable');
+      for (const row of table.rows) {
+        for (const cell of row.cells) {
+          cell.tabIndex = -1;
+          if (!cell.textContent.trim() && cell.children.length === 0) cell.classList.add('cell-empty');
+        }
+      }
+    }
+  }
+
+  let cellEditor = null;   // {cell, input, table} — открытое поле правки
+  let activeCell = null;   // ячейка, к которой относится панель действий
+
+  function discardCellEditor() {
+    cellEditor = null;
+    activeCell = null;
+  }
+
+  function openCellEditor(cell) {
+    if (cellEditor && cellEditor.cell === cell) return;
+    closeCellEditor(true);
+    const table = cell.closest('table[data-line]');
+    const model = tableSourceModel(table);
+    if (!model) {
+      setStatus('Таблица разошлась с исходником — правьте её текстом', true);
+      return;
+    }
+    const { row, column } = cellCoords(cell);
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'cell-input';
+    input.value = unescapeCell(modelCellText(model, row, column));
+    input.setAttribute('aria-label', `Ячейка: строка ${row + 1}, столбец ${column + 1}`);
+
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        const target = cellEditor && cellEditor.cell;
+        closeCellEditor(false);
+        if (target) target.focus();
+        return;
+      }
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        moveCellEdit(cell, event.shiftKey ? -1 : 1, 0);
+        return;
+      }
+      if (event.key === 'Tab') {
+        event.preventDefault();
+        moveCellEdit(cell, 0, event.shiftKey ? -1 : 1);
+      }
+    });
+    input.addEventListener('blur', () => {
+      if (!cellEditor || cellEditor.input !== input) return;
+      closeCellEditor(true);
+    });
+
+    cellEditor = { cell, input, table };
+    activeCell = cell;
+    cell.replaceChildren(input);
+    cell.classList.add('cell-editing');
+    input.focus();
+    input.select();
+    showTableToolbar(table, cell);
+  }
+
+  function closeCellEditor(commit) {
+    if (!cellEditor) return false;
+    const { cell, input, table } = cellEditor;
+    const value = input.value;
+    cellEditor = null; // до перерисовки: blur не должен зайти сюда второй раз
+    cell.classList.remove('cell-editing');
+
+    const model = tableSourceModel(table);
+    if (!model) { renderPreviewNow(); return false; }
+
+    const { row, column } = cellCoords(cell);
+    const nextText = escapeCell(value);
+    if (commit && nextText !== modelCellText(model, row, column)) {
+      setModelCellText(model, row, column, nextText);
+      if (applyTableModel(model)) { renderPreviewNow(); return true; }
+      renderCellContent(cell, nextText);
+    } else {
+      renderCellContent(cell, modelCellText(model, row, column));
+    }
+    if (settings.mode === 'split') rebuildScrollMap(model.file.content);
+    return true;
+  }
+
+  function cellAt(table, row, column) {
+    const line = table.rows[row];
+    return line ? (line.cells[column] || null) : null;
+  }
+
+  function moveCellEdit(cell, deltaRow, deltaColumn) {
+    const table = cell.closest('table[data-line]');
+    if (!table) return;
+    const startLine = table.dataset.line;
+    const columns = table.rows[0].cells.length;
+    let { row, column } = cellCoords(cell);
+    row += deltaRow;
+    column += deltaColumn;
+    if (column >= columns) { column = 0; row += 1; }
+    if (column < 0) { column = columns - 1; row -= 1; }
+    if (row < 0) { closeCellEditor(true); return; }
+
+    if (row >= table.rows.length) {
+      // Enter в последней строке просто закрывает правку: дописывать строку —
+      // дело Tab, как в любом редакторе таблиц
+      if (deltaColumn === 0) { closeCellEditor(true); return; }
+      closeCellEditor(true);
+      if (!runTableOperation(table, (model) => {
+        model.body.push(new Array(model.header.length).fill(''));
+      })) return;
+      focusTableCell(startLine, row, column, true);
+      return;
+    }
+    const target = cellAt(table, row, column);
+    if (target) openCellEditor(target);
+    else closeCellEditor(true);
+  }
+
+  function focusTableCell(startLine, row, column, edit) {
+    const table = previewBody.querySelector(`table[data-line="${startLine}"]`);
+    if (!table) return;
+    const cell = cellAt(table, row, column);
+    if (!cell) return;
+    if (edit) openCellEditor(cell);
+    else { cell.focus(); activeCell = cell; showTableToolbar(table, cell); }
+  }
+
+  // Общий путь для правок структуры: собрать модель, изменить, записать,
+  // перерисовать и вернуть фокус в ту же ячейку.
+  function runTableOperation(table, change) {
+    const model = tableSourceModel(table);
+    if (!model) {
+      setStatus('Таблица разошлась с исходником — правьте её текстом', true);
+      return false;
+    }
+    if (change(model) === false) return false;
+    applyTableModel(model);
+    renderPreviewNow();
+    return true;
+  }
+
+  function tableActionContext() {
+    if (cellEditor) closeCellEditor(true);
+    const cell = activeCell;
+    if (!cell || !previewBody.contains(cell)) return null;
+    const table = cell.closest('table[data-line]');
+    if (!table) return null;
+    return { table, startLine: table.dataset.line, ...cellCoords(cell) };
+  }
+
+  const TABLE_ACTIONS = {
+    'row-above'(model, at) {
+      model.body.splice(Math.max(0, at.row - 1), 0, new Array(model.header.length).fill(''));
+    },
+    'row-below'(model, at) {
+      model.body.splice(at.row, 0, new Array(model.header.length).fill(''));
+    },
+    'row-delete'(model, at) {
+      if (at.row === 0) { setStatus('Шапку таблицы удалить нельзя'); return false; }
+      model.body.splice(at.row - 1, 1);
+      return true;
+    },
+    'column-left'(model, at) {
+      model.header.splice(at.column, 0, '');
+      model.aligns.splice(at.column, 0, '');
+      for (const row of model.body) row.splice(at.column, 0, '');
+    },
+    'column-right'(model, at) {
+      model.header.splice(at.column + 1, 0, '');
+      model.aligns.splice(at.column + 1, 0, '');
+      for (const row of model.body) row.splice(at.column + 1, 0, '');
+    },
+    'column-delete'(model, at) {
+      if (model.header.length <= 1) { setStatus('В таблице должен остаться столбец'); return false; }
+      model.header.splice(at.column, 1);
+      model.aligns.splice(at.column, 1);
+      for (const row of model.body) row.splice(at.column, 1);
+      return true;
+    },
+  };
+
+  function runTableAction(name) {
+    const at = tableActionContext();
+    if (!at) return;
+    const action = TABLE_ACTIONS[name];
+    if (!action) return;
+    const changed = runTableOperation(at.table, (model) => action(model, at));
+    if (!changed) return;
+    const rows = { 'row-above': at.row, 'row-below': at.row + 1 };
+    const columns = { 'column-left': at.column, 'column-right': at.column + 1 };
+    let row = name in rows ? rows[name] : at.row;
+    let column = name in columns ? columns[name] : at.column;
+    if (name === 'row-delete') row = Math.max(0, at.row - 1);
+    if (name === 'column-delete') column = Math.max(0, at.column - 1);
+    focusTableCell(at.startLine, row, column, false);
+  }
+
+  function setColumnAlign(align) {
+    const at = tableActionContext();
+    if (!at) return;
+    let applied = align;
+    runTableOperation(at.table, (model) => {
+      applied = model.aligns[at.column] === align ? '' : align;
+      model.aligns[at.column] = applied;
+    });
+    focusTableCell(at.startLine, at.row, at.column, false);
+  }
+
+  // ---- панель действий над таблицей ----
+
+  const TABLE_TOOLBAR_BUTTONS = [
+    ['label', 'Строка'],
+    ['action', 'row-above', '↑+', 'Добавить строку выше'],
+    ['action', 'row-below', '↓+', 'Добавить строку ниже'],
+    ['action', 'row-delete', '✕', 'Удалить строку'],
+    ['separator'],
+    ['label', 'Столбец'],
+    ['action', 'column-left', '+←', 'Добавить столбец слева'],
+    ['action', 'column-right', '+→', 'Добавить столбец справа'],
+    ['action', 'column-delete', '✕', 'Удалить столбец'],
+    ['separator'],
+    ['label', 'Выравнивание'],
+    ['align', 'left', '⇤', 'По левому краю'],
+    ['align', 'center', '⇔', 'По центру'],
+    ['align', 'right', '⇥', 'По правому краю'],
+  ];
+
+  let tableToolbar = null;
+
+  function ensureTableToolbar() {
+    if (tableToolbar) return tableToolbar;
+    tableToolbar = document.createElement('div');
+    tableToolbar.className = 'table-toolbar';
+    tableToolbar.hidden = true;
+    tableToolbar.setAttribute('role', 'toolbar');
+    tableToolbar.setAttribute('aria-label', 'Действия с таблицей');
+    for (const spec of TABLE_TOOLBAR_BUTTONS) {
+      if (spec[0] === 'separator') {
+        const separator = document.createElement('span');
+        separator.className = 'table-toolbar-separator';
+        tableToolbar.appendChild(separator);
+        continue;
+      }
+      if (spec[0] === 'label') {
+        const label = document.createElement('span');
+        label.className = 'table-toolbar-label';
+        label.textContent = spec[1];
+        tableToolbar.appendChild(label);
+        continue;
+      }
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = spec[2];
+      button.title = spec[3];
+      button.setAttribute('aria-label', spec[3]);
+      if (spec[0] === 'align') button.dataset.align = spec[1];
+      else button.dataset.action = spec[1];
+      // без этого фокус уходит из поля правки и ячейка успевает закрыться сама
+      button.addEventListener('mousedown', (event) => event.preventDefault());
+      button.addEventListener('click', () => {
+        if (spec[0] === 'align') setColumnAlign(spec[1]);
+        else runTableAction(spec[1]);
+      });
+      tableToolbar.appendChild(button);
+    }
+    document.body.appendChild(tableToolbar);
+    return tableToolbar;
+  }
+
+  function showTableToolbar(table, cell) {
+    const toolbar = ensureTableToolbar();
+    activeCell = cell;
+    toolbar.hidden = false;
+    updateAlignButtons(table, cell);
+    positionTableToolbar(table);
+  }
+
+  function updateAlignButtons(table, cell) {
+    if (!tableToolbar) return;
+    const model = tableSourceModel(table);
+    const column = cellCoords(cell).column;
+    const current = model ? (model.aligns[column] || '') : '';
+    for (const button of tableToolbar.querySelectorAll('button[data-align]')) {
+      button.setAttribute('aria-pressed', String(button.dataset.align === current));
+    }
+  }
+
+  function positionTableToolbar(table) {
+    if (!tableToolbar || tableToolbar.hidden) return;
+    const rect = table.getBoundingClientRect();
+    const pane = previewPane.getBoundingClientRect();
+    // таблицу увели за край панели — панель действий прячем вместе с ней
+    if (rect.bottom < pane.top || rect.top > pane.bottom) {
+      tableToolbar.style.visibility = 'hidden';
+      return;
+    }
+    tableToolbar.style.visibility = 'visible';
+    const size = tableToolbar.getBoundingClientRect();
+    let top = rect.top - size.height - 6;
+    if (top < pane.top + 4) top = Math.min(rect.bottom + 6, pane.bottom - size.height - 4);
+    const left = Math.min(rect.left, window.innerWidth - size.width - 8);
+    tableToolbar.style.top = Math.max(4, top) + 'px';
+    tableToolbar.style.left = Math.max(8, left) + 'px';
+  }
+
+  function hideTableToolbar() {
+    if (tableToolbar) tableToolbar.hidden = true;
+    activeCell = null;
+  }
+
+  function repositionTableToolbar() {
+    if (!tableToolbar || tableToolbar.hidden || !activeCell) return;
+    const table = activeCell.closest('table[data-line]');
+    if (table) positionTableToolbar(table);
+    else hideTableToolbar();
+  }
+
+  // ---- события ----
+
+  previewBody.addEventListener('change', (event) => {
+    const input = event.target;
+    if (!(input instanceof HTMLInputElement) || input.type !== 'checkbox') return;
+    if (toggleTaskCheckbox(input)) return;
+    input.checked = !input.checked;
+    setStatus('Отметка не совпала с исходником — перерисовываю', true);
+    renderPreviewNow();
+  });
+
+  let previewPointerDown = null;
+  previewBody.addEventListener('pointerdown', (event) => {
+    previewPointerDown = { x: event.clientX, y: event.clientY };
+  });
+
+  previewBody.addEventListener('click', (event) => {
+    const target = event.target;
+    if (!target || !target.closest) return;
+    const cell = target.closest('td, th');
+    if (!cell || !previewBody.contains(cell)) return;
+    if (!cell.closest('table[data-line]')) return;
+    if (cellEditor && cellEditor.cell === cell) return;
+    if (target.closest('a')) return; // ссылка в ячейке — это переход, а не правка
+
+    // выделение текста мышью не должно превращаться в правку
+    if (previewPointerDown) {
+      const dx = Math.abs(event.clientX - previewPointerDown.x);
+      const dy = Math.abs(event.clientY - previewPointerDown.y);
+      if (dx > 4 || dy > 4) return;
+    }
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed) return;
+    openCellEditor(cell);
+  });
+
+  // Стрелки по ячейкам, когда поле правки закрыто: та же раскладка, что в любой
+  // таблице, плюс Enter и F2 для входа в правку.
+  previewBody.addEventListener('keydown', (event) => {
+    if (cellEditor) return;
+    const target = event.target;
+    if (!target || !target.closest) return;
+    const cell = target.closest('td, th');
+    if (!cell) return;
+    const table = cell.closest('table[data-line]');
+    if (!table) return;
+
+    if (event.key === 'Enter' || event.key === 'F2') {
+      event.preventDefault();
+      openCellEditor(cell);
+      return;
+    }
+    if (event.key === 'Escape') {
+      hideTableToolbar();
+      cell.blur();
+      return;
+    }
+    const steps = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
+    const step = steps[event.key];
+    if (!step) return;
+    const { row, column } = cellCoords(cell);
+    const target2 = cellAt(table, row + step[0], column + step[1]);
+    if (!target2) return;
+    event.preventDefault();
+    target2.focus();
+    showTableToolbar(table, target2);
+  });
+
+  previewBody.addEventListener('focusin', (event) => {
+    const cell = event.target.closest ? event.target.closest('td, th') : null;
+    if (!cell) return;
+    const table = cell.closest('table[data-line]');
+    if (table) showTableToolbar(table, cell);
+  });
+
+  // Клик мимо таблицы закрывает правку и убирает панель действий.
+  document.addEventListener('pointerdown', (event) => {
+    if (tableToolbar && tableToolbar.contains(event.target)) return;
+    const cell = event.target.closest ? event.target.closest('td, th') : null;
+    if (cell && cell.closest('table[data-line]') && previewBody.contains(cell)) return;
+    if (cellEditor) closeCellEditor(true);
+    hideTableToolbar();
+  });
+
+  previewPane.addEventListener('scroll', repositionTableToolbar);
+  window.addEventListener('resize', repositionTableToolbar);
 
   function openFile(id) {
     if (currentId === id) return;
@@ -3515,6 +4199,13 @@ hr { border: 0; border-top: 1px solid #d0d7de; margin: 1.8em 0; }
       closeFind();
       return;
     }
+    if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'z') {
+      // в текстовых полях отменяет сам браузер — своя история только для превью
+      const target = event.target;
+      const inField = target && (target === editorEl || target.classList?.contains('cell-input'));
+      if (!inField && undoDirectEdit()) event.preventDefault();
+      return;
+    }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
       event.preventDefault();
       flushEditor();
@@ -3579,6 +4270,16 @@ function hello() {
 | да      | ✓    |
 
 - [x] и списки задач
+
+## Правка прямо в просмотре
+
+Таблицы и списки задач не обязательно править текстом:
+
+- **щёлкните по ячейке таблицы** — она открывается на правку прямо здесь; Tab идёт вправо, Enter — вниз, Escape отменяет, а в последней ячейке Tab дописывает строку;
+- когда ячейка выбрана, над таблицей появляется панель: добавить и удалить строку или столбец, задать выравнивание;
+- **щёлкните по квадратику задачи** — отметка сразу уходит в файл.
+
+Случайную правку возвращает Ctrl+Z.
 
 ---
 

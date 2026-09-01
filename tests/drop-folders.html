@@ -134,14 +134,27 @@
     function autoAnswer(label, stopAfterMs) {
       const until = Date.now() + (stopAfterMs || 6000);
       let clicks = 0;
+      let geometry = null;
       const timer = setInterval(() => {
         if (Date.now() > until) { clearInterval(timer); return; }
         if (el('dialog-overlay').hidden) return;
-        const button = Array.from(el('dialog-buttons').querySelectorAll('button'))
-          .find((b) => b.textContent === label);
+        const buttons = Array.from(el('dialog-buttons').querySelectorAll('button'));
+        // заодно смотрим, помещается ли ряд кнопок в окно диалога
+        if (!geometry && buttons.length > 0) {
+          const box = document.querySelector('.dialog').getBoundingClientRect();
+          geometry = {
+            count: buttons.length,
+            outside: buttons.filter((button) => {
+              const rect = button.getBoundingClientRect();
+              return rect.left < box.left - 0.5 || rect.right > box.right + 0.5
+                || rect.top < box.top - 0.5 || rect.bottom > box.bottom + 0.5;
+            }).map((button) => button.textContent),
+          };
+        }
+        const button = buttons.find((b) => b.textContent === label);
         if (button) { button.click(); clicks += 1; }
       }, 40);
-      return { stop: () => clearInterval(timer), count: () => clicks };
+      return { stop: () => clearInterval(timer), count: () => clicks, geometry: () => geometry };
     }
 
     const rows = () => Array.from(document.querySelectorAll('#file-list .file-row'));
@@ -204,6 +217,14 @@
 
     check('«Заменить все» спросили один раз', answerer.count() === 1,
       'нажатий: ' + answerer.count());
+
+    const dialogBox = answerer.geometry();
+    check('в диалоге замены все четыре кнопки',
+      Boolean(dialogBox) && dialogBox.count === 4,
+      dialogBox ? 'кнопок: ' + dialogBox.count : 'диалог не пойман');
+    check('ни одна кнопка не вылезает за края диалога',
+      Boolean(dialogBox) && dialogBox.outside.length === 0,
+      dialogBox ? 'снаружи: ' + (dialogBox.outside.join(', ') || 'нет') : '—');
     check('дубликатов файлов не появилось',
       rows().filter((r) => r.querySelector('.file-name').textContent === 'вступление.md').length === 1,
       tree().join(' | '));

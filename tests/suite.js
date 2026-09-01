@@ -6,6 +6,7 @@ module.exports = [
   'tests/drop-folders.html',
   'tests/delete-and-undo.html',
   'tests/split-and-sync.html',
+  'tests/direct-editing.html',
   'tests/editing.html',
   'tests/editor-highlight.html',
   'tests/navigation.html',

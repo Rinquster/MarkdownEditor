@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>MDEditor — правка таблиц и задач в превью</title>
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+  <header class="app-header">
+    <div class="brand"><span class="brand-mark">MD</span><h1>MD</h1></div>
+    <div class="segmented">
+      <button type="button" id="mode-preview-button">Просмотр</button>
+      <button type="button" id="mode-split-button">Вместе</button>
+      <button type="button" id="mode-editor-button">Редактор</button>
+    </div>
+    <div class="header-settings">
+      <select id="preview-font-select"><option value="Lato">Lato</option><option value="Inter">Inter</option><option value="Roboto">Roboto</option><option value="Liberation Sans">Liberation Sans</option><option value="Liberation Serif">Liberation Serif</option></select>
+      <button type="button" id="preview-size-dec">−</button><span id="preview-size-value">17</span>
+      <button type="button" id="preview-size-inc">+</button>
+      <button type="button" id="editor-size-dec">−</button><span id="editor-size-value">14</span>
+      <button type="button" id="editor-size-inc">+</button>
+      <button type="button" id="theme-button"></button><button type="button" id="toc-button"><span>Оглавление</span></button><button type="button" id="copy-doc-button"><span>Текст</span></button>
+      <button type="button" id="download-zip-button"><span>ZIP</span></button>
+    </div>
+  </header>
+
+  <button type="button" id="sidebar-toggle"></button>
+  <div id="sidebar-backdrop" class="sidebar-backdrop" hidden></div>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar">
+      <div class="pane-title"><span>Файлы</span>
+        <div class="pane-actions">
+          <button type="button" id="new-file-button">+</button>
+          <button type="button" id="new-folder-button">D+</button>
+          <button type="button" id="delete-all-button">X</button>
+          <button type="button" id="upload-button">↑</button>
+        </div>
+      </div>
+      <div class="file-search"><input id="file-search-input" type="search"></div>
+      <div id="file-list" class="file-list"></div>
+      <div class="sidebar-footer"><span id="status-line">…</span></div>
+    </aside>
+    <div id="sidebar-resizer" class="sidebar-resizer"></div>
+    <main class="content" id="content">
+      <div id="editor-pane" class="editor-pane" hidden><div id="editor-toolbar" class="editor-toolbar"></div><div class="editor-surface"><pre id="editor-highlight" class="editor-highlight" aria-hidden="true"></pre><textarea id="editor"></textarea></div></div>
+      <div id="split-resizer" class="split-resizer" hidden></div>
+      <div id="preview-pane" class="preview-pane"><div id="preview-body" class="markdown-body"></div></div>
+      <aside id="toc-panel" class="toc-panel" hidden><div class="toc-title">Оглавление</div><nav id="toc-list" class="toc-list"></nav></aside>
+      <div id="welcome-pane" class="welcome-pane" hidden><div class="welcome-card"></div></div>
+    </main>
+  </div>
+
+  <div id="find-bar" class="find-bar" hidden><input id="find-input" type="search"><span id="find-count" class="find-count"></span><button type="button" id="find-prev">↑</button><button type="button" id="find-next">↓</button><button type="button" id="find-close">✕</button></div>
+  <div id="file-context-menu" class="context-menu" hidden></div>
+  <div id="dialog-overlay" class="dialog-overlay" hidden>
+    <div class="dialog"><p id="dialog-message"></p><div id="dialog-buttons" class="dialog-buttons"></div></div>
+  </div>
+  <input id="upload-input" type="file" multiple hidden>
+  <pre id="results" style="position:fixed;left:-99999px"></pre>
+
+  <script src="../vendor/marked.min.js"></script>
+  <script>
+  (async () => {
+    const out = []; let passed = 0, failed = 0;
+    const flush = () => { document.getElementById('results').textContent = out.join('\n'); };
+    const check = (name, ok, detail) => {
+      ok ? passed++ : failed++;
+      out.push((ok ? 'PASS  ' : 'FAIL  ') + name + (ok || !detail ? '' : '\n        → ' + detail));
+      flush();
+    };
+    const step = (label) => { out.push('.. ' + label); flush(); };
+    const el = (id) => document.getElementById(id);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    window.addEventListener('error', (e) => { out.push('ОШИБКА: ' + e.message); flush(); });
+
+    await new Promise((resolve) => {
+      const request = indexedDB.deleteDatabase('mdeditor');
+      request.onsuccess = request.onerror = request.onblocked = () => resolve();
+    });
+    try {
+      localStorage.removeItem('mdeditor-emergency');
+      localStorage.removeItem('mdeditor-settings');
+    } catch {}
+
+    await new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = '../js/app.js';
+      script.onload = resolve; script.onerror = reject;
+      document.body.appendChild(script);
+    });
+    for (let i = 0; i < 80 && el('file-list').children.length === 0; i++) await sleep(50);
+
+    const editor = el('editor');
+    const previewBody = el('preview-body');
+
+    // Кладём документ в файл через редактор — это обычный путь правки.
+    async function setDocument(text) {
+      el('mode-editor-button').click();
+      await sleep(60);
+      editor.value = text;
+      editor.dispatchEvent(new Event('input', { bubbles: true }));
+      await sleep(60);
+      el('mode-preview-button').click();
+      await sleep(200);
+    }
+
+    const table = () => previewBody.querySelector('table');
+    const cellAt = (row, column) => table().rows[row].cells[column];
+    const clickCell = (row, column) => {
+      const cell = cellAt(row, column);
+      const rect = cell.getBoundingClientRect();
+      const point = { bubbles: true, clientX: Math.round(rect.left + 5), clientY: Math.round(rect.top + 5) };
+      cell.dispatchEvent(new PointerEvent('pointerdown', point));
+      cell.dispatchEvent(new MouseEvent('click', point));
+      return previewBody.querySelector('.cell-input');
+    };
+    const typeInCell = (input, text) => {
+      input.value = text;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const pressIn = (node, key, options = {}) =>
+      node.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...options }));
+    const toolbarButton = (label) =>
+      Array.from(document.querySelectorAll('.table-toolbar button'))
+        .find((button) => button.title === label);
+
+    // ================= 1. таблица: правка ячейки кликом =================
+    step('таблица: правка ячейки по клику');
+    const TABLE_DOC = [
+      '# Отчёт',
+      '',
+      '| Задача | Оценка | Срок |',
+      '| --- | --- | --- |',
+      '| Первая | 3 | май |',
+      '| Вторая | 4 | июнь |',
+      '',
+      'Абзац после таблицы.',
+    ].join('\n');
+    await setDocument(TABLE_DOC);
+
+    check('таблица отрисована и помечена как редактируемая',
+      Boolean(table()) && table().classList.contains('table-editable'));
+    check('у таблицы есть привязка к строкам исходника',
+      table().dataset.line === '2' && table().dataset.lineCount === '4',
+      'line=' + table().dataset.line + ' count=' + table().dataset.lineCount);
+
+    let input = clickCell(2, 1);
+    check('клик по ячейке открывает поле правки', Boolean(input));
+    check('в поле — исходный текст ячейки', input && input.value === '4', input && input.value);
+
+    typeInCell(input, '5');
+    pressIn(input, 'Enter');
+    await sleep(150);
+    check('Enter записал правку в исходник', /\| Вторая \| 5 /.test(editor.value || ''),
+      (editor.value || '').split('\n')[5]);
+    check('в превью ячейка обновилась', cellAt(2, 1).textContent.trim() === '5',
+      cellAt(2, 1).textContent);
+    check('остальные ячейки не пострадали',
+      cellAt(1, 1).textContent.trim() === '3' && cellAt(2, 2).textContent.trim() === 'июнь');
+    check('Enter перевёл правку в ячейку ниже или закрыл поле',
+      !previewBody.querySelector('.cell-editing') || Boolean(previewBody.querySelector('.cell-input')));
+
+    // ================= 2. таблица: Escape и Tab =================
+    step('таблица: Escape отменяет, Tab идёт вправо');
+    document.body.click();
+    await sleep(80);
+    input = clickCell(1, 0);
+    typeInCell(input, 'Испорчено');
+    pressIn(input, 'Escape');
+    await sleep(120);
+    check('Escape вернул прежнее значение ячейки', /\| Первая /.test(editor.value),
+      editor.value.split('\n')[4]);
+    check('Escape не оставил поле правки', !previewBody.querySelector('.cell-input'));
+
+    input = clickCell(1, 0);
+    pressIn(input, 'Tab');
+    await sleep(120);
+    const nextInput = previewBody.querySelector('.cell-input');
+    check('Tab перешёл в соседнюю ячейку справа',
+      Boolean(nextInput) && nextInput.value === '3', nextInput && nextInput.value);
+
+    // ================= 3. таблица: экранирование и разметка =================
+    step('таблица: черта и разметка внутри ячейки');
+    typeInCell(nextInput, 'а | б');
+    pressIn(nextInput, 'Escape');
+    document.body.click();
+    await sleep(120);
+    input = clickCell(1, 1);
+    typeInCell(input, 'а | б');
+    input.dispatchEvent(new Event('blur', { bubbles: false }));
+    await sleep(150);
+    check('вертикальная черта в ячейке экранирована',
+      /а \\\| б/.test(editor.value), editor.value.split('\n')[4]);
+    check('столбцов по-прежнему три', table().rows[1].cells.length === 3,
+      String(table().rows[1].cells.length));
+
+    input = clickCell(1, 1);
+    check('в поле правки черта показана без экранирования',
+      input && input.value === 'а | б', input && input.value);
+    typeInCell(input, '**жирно**');
+    input.dispatchEvent(new Event('blur', { bubbles: false }));
+    await sleep(150);
+    check('разметка в ячейке отрисована, а не показана как текст',
+      Boolean(cellAt(1, 1).querySelector('strong')), cellAt(1, 1).innerHTML);
+
+    // ================= 4. таблица: строки и столбцы =================
+    step('таблица: добавление и удаление строк и столбцов');
+    document.body.click();
+    await sleep(80);
+    cellAt(1, 0).focus();
+    await sleep(80);
+    check('панель действий появилась у сфокусированной ячейки',
+      Boolean(document.querySelector('.table-toolbar')) && !document.querySelector('.table-toolbar').hidden);
+
+    const rowsBefore = table().rows.length;
+    toolbarButton('Добавить строку ниже').click();
+    await sleep(200);
+    check('строка добавлена в превью', table().rows.length === rowsBefore + 1,
+      rowsBefore + ' → ' + table().rows.length);
+    check('строка добавлена и в исходник',
+      editor.value.split('\n').filter((line) => line.startsWith('|')).length === rowsBefore + 2,
+      editor.value);
+
+    const columnsBefore = table().rows[0].cells.length;
+    toolbarButton('Добавить столбец справа').click();
+    await sleep(200);
+    check('столбец добавлен во все строки',
+      Array.from(table().rows).every((row) => row.cells.length === columnsBefore + 1),
+      Array.from(table().rows).map((r) => r.cells.length).join(','));
+
+    toolbarButton('Удалить столбец').click();
+    await sleep(200);
+    check('столбец удалён', table().rows[0].cells.length === columnsBefore,
+      String(table().rows[0].cells.length));
+
+    toolbarButton('Удалить строку').click();
+    await sleep(200);
+    check('строка удалена', table().rows.length === rowsBefore,
+      String(table().rows.length));
+
+    check('абзац под таблицей на месте', /Абзац после таблицы/.test(previewBody.textContent));
+    check('заголовок над таблицей на месте', /Отчёт/.test(previewBody.textContent));
+
+    // ================= 5. таблица: шапку не удалить =================
+    step('таблица: шапка защищена');
+    cellAt(0, 0).focus();
+    await sleep(80);
+    const beforeHeaderDelete = table().rows.length;
+    toolbarButton('Удалить строку').click();
+    await sleep(200);
+    check('шапку удалить нельзя', table().rows.length === beforeHeaderDelete,
+      String(table().rows.length));
+
+    // ================= 6. таблица: выравнивание =================
+    step('таблица: выравнивание столбца');
+    cellAt(1, 1).focus();
+    await sleep(80);
+    toolbarButton('По центру').click();
+    await sleep(200);
+    check('в разделительной строке появилось выравнивание по центру',
+      /\|\s*:-+:\s*\|/.test(editor.value.split('\n')[3] || ''), editor.value.split('\n')[3]);
+    check('выравнивание доехало до превью',
+      /center/.test(table().rows[1].cells[1].getAttribute('align') || table().rows[1].cells[1].style.textAlign || ''),
+      table().rows[1].cells[1].outerHTML.slice(0, 80));
+
+    // ================= 7. чекбоксы =================
+    step('списки задач: отметка кликом');
+    const TASK_DOC = [
+      '# Задачи',
+      '',
+      '- [ ] первая',
+      '- [x] вторая',
+      '  - [ ] вложенная',
+      '',
+      '```',
+      '- [ ] это пример в блоке кода',
+      '```',
+      '',
+      'Хвост.',
+    ].join('\n');
+    await setDocument(TASK_DOC);
+
+    const boxes = () => Array.from(previewBody.querySelectorAll('input[type="checkbox"]'));
+    check('чекбоксы отрисованы', boxes().length === 3, String(boxes().length));
+    check('чекбоксы не заблокированы', boxes().every((box) => !box.disabled));
+    check('состояние соответствует исходнику',
+      !boxes()[0].checked && boxes()[1].checked && !boxes()[2].checked,
+      boxes().map((b) => b.checked).join(','));
+
+    boxes()[0].click();
+    await sleep(150);
+    check('клик отметил первую задачу в исходнике',
+      /^- \[x\] первая$/m.test(editor.value), editor.value.split('\n')[2]);
+    check('строка с кодом не тронута',
+      /^- \[ \] это пример в блоке кода$/m.test(editor.value));
+
+    boxes()[1].click();
+    await sleep(150);
+    check('повторный клик снимает отметку',
+      /^- \[ \] вторая$/m.test(editor.value), editor.value.split('\n')[3]);
+
+    boxes()[2].click();
+    await sleep(150);
+    check('вложенная задача отмечается независимо',
+      /^ {2}- \[x\] вложенная$/m.test(editor.value), editor.value.split('\n')[4]);
+    check('атрибут checked синхронизирован для печати и выгрузки',
+      boxes()[2].hasAttribute('checked'));
+
+    // ================= 8. отмена правки =================
+    step('отмена правки из превью');
+    const beforeUndo = editor.value;
+    document.dispatchEvent(new KeyboardEvent('keydown',
+      { key: 'z', ctrlKey: true, bubbles: true, cancelable: true }));
+    await sleep(200);
+    check('Ctrl+Z вернул документ к состоянию до последней правки',
+      editor.value !== beforeUndo && /^ {2}- \[ \] вложенная$/m.test(editor.value),
+      editor.value.split('\n')[4]);
+    check('превью перерисовано под отменённое состояние',
+      previewBody.querySelectorAll('input[type="checkbox"]')[2].checked === false);
+
+    // ================= 9. правка в режиме «Вместе» =================
+    step('правка таблицы в режиме «Вместе»');
+    await setDocument(['| A | B |', '| --- | --- |', '| 1 | 2 |'].join('\n'));
+    el('mode-split-button').click();
+    await sleep(300);
+    input = clickCell(1, 0);
+    typeInCell(input, '42');
+    pressIn(input, 'Enter');
+    await sleep(200);
+    check('правка из превью попала в текст редактора', /\| 42 /.test(editor.value),
+      editor.value);
+    check('редактор и файл не разошлись',
+      editor.value.split('\n').length === 3, String(editor.value.split('\n').length));
+
+    // ================= 10. Tab в последней ячейке =================
+    step('таблица: Tab в последней ячейке дописывает строку');
+    await setDocument(['| A | B |', '| --- | --- |', '| 1 | 2 |'].join('\n'));
+    const beforeTab = table().rows.length;
+    input = clickCell(1, 1);
+    pressIn(input, 'Tab');
+    await sleep(250);
+    check('Tab в правой нижней ячейке добавил строку',
+      table().rows.length === beforeTab + 1, beforeTab + ' → ' + table().rows.length);
+    check('новая строка попала в исходник',
+      editor.value.split('\n').length === 4, JSON.stringify(editor.value));
+    check('правка продолжается в новой строке',
+      Boolean(previewBody.querySelector('.cell-input')));
+
+    document.body.click();
+    await sleep(100);
+    check('Enter в последней строке строку не дописывает',
+      (() => {
+        const rows = table().rows.length;
+        const field = clickCell(rows - 1, 0);
+        pressIn(field, 'Enter');
+        return table().rows.length === rows;
+      })(), String(table().rows.length));
+
+    // ================= 11. вложенные блоки =================
+    step('таблицы и задачи внутри цитаты');
+    await setDocument([
+      '> | A | B |',
+      '> | --- | --- |',
+      '> | 1 | 2 |',
+      '',
+      '> - [ ] задача в цитате',
+      '',
+    ].join('\n'));
+
+    const quotedTable = previewBody.querySelector('blockquote table');
+    check('таблица внутри цитаты отрисована', Boolean(quotedTable));
+    check('таблица внутри цитаты не помечена редактируемой',
+      Boolean(quotedTable) && !quotedTable.classList.contains('table-editable'),
+      quotedTable && quotedTable.className);
+
+    const quotedCell = quotedTable.rows[1].cells[0];
+    const rect = quotedCell.getBoundingClientRect();
+    const point = { bubbles: true, clientX: Math.round(rect.left + 5), clientY: Math.round(rect.top + 5) };
+    quotedCell.dispatchEvent(new PointerEvent('pointerdown', point));
+    quotedCell.dispatchEvent(new MouseEvent('click', point));
+    await sleep(120);
+    check('клик по такой ячейке ничего не открывает и не ломает',
+      !previewBody.querySelector('.cell-input') && /\| 1 \| 2 \|/.test(editor.value));
+
+    const quotedBox = previewBody.querySelector('blockquote input[type="checkbox"]');
+    check('задача внутри цитаты отрисована', Boolean(quotedBox));
+    quotedBox.click();
+    await sleep(150);
+    check('отметка в цитате записана в исходник',
+      /^> - \[x\] задача в цитате$/m.test(editor.value),
+      editor.value.split('\n')[4]);
+
+    // ================= 12. документ без таблиц не ломается =================
+    step('обычный документ остаётся обычным');
+    el('mode-preview-button').click();
+    await sleep(150);
+    await setDocument('# Просто текст\n\nАбзац со **словом** и `кодом`.\n');
+    check('в обычном документе нет редактируемых таблиц',
+      previewBody.querySelectorAll('.table-editable').length === 0);
+    check('текст отрисован как раньше',
+      /Абзац со словом и кодом/.test(previewBody.textContent), previewBody.textContent);
+
+    out.push('');
+    out.push('ИТОГО: ' + passed + ' пройдено, ' + failed + ' провалено');
+    flush();
+    document.title = failed === 0 ? 'ALL-PASS' : 'FAILURES-' + failed;
+  })().catch((error) => {
+    document.getElementById('results').textContent += '\nИСКЛЮЧЕНИЕ: ' + (error && error.stack || error);
+    document.title = 'FAILURES-CRASH';
+  });
+  </script>
+</body>
+</html>
